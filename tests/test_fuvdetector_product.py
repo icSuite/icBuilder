@@ -254,3 +254,57 @@ def test_orbit_script_does_not_allow_a_label_to_overstate_preprocessing():
     wic = regular_camera("WIC", 4, 0.05, [BASE_TIME], 10.0)
     with pytest.raises(ValueError, match="explicit preprocessing branch"):
         FUVDetector(wic, preprocessing_label="historical_fuview")
+
+
+def test_orbit_script_can_process_orbits_in_parallel(tmp_path, monkeypatch):
+    wic_directory = tmp_path / "wic"
+    wic_directory.mkdir()
+    for orbit in (1, 2):
+        (wic_directory / f"wic_or{orbit:04d}.nc").touch()
+
+    calls = []
+
+    def record_orbit(orbit, **settings):
+        calls.append((orbit, settings))
+        return orbit, 1
+
+    def record_process_map(function, orbits, **settings):
+        assert settings["max_workers"] == 2
+        assert settings["chunksize"] == 1
+        return [function(orbit) for orbit in orbits]
+
+    monkeypatch.setattr(ORBIT_SCRIPT, "process_orbit", record_orbit)
+    monkeypatch.setattr(ORBIT_SCRIPT, "process_map", record_process_map)
+
+    result = ORBIT_SCRIPT.main([
+        "--base", str(tmp_path),
+        "--workers", "2",
+    ])
+
+    assert result == [(1, 1), (2, 1)]
+    assert [orbit for orbit, _ in calls] == [1, 2]
+
+
+def test_orbit_script_rejects_nonpositive_worker_count():
+    with pytest.raises(ValueError, match="workers must be at least 1"):
+        ORBIT_SCRIPT.main(["--workers", "0"])
+
+
+def test_worker_failure_identifies_the_orbit(tmp_path, monkeypatch):
+    wic_directory = tmp_path / "wic"
+    wic_directory.mkdir()
+    (wic_directory / "wic_or0042.nc").touch()
+
+    def fail(*args, **kwargs):
+        raise ValueError("bad geometry")
+
+    monkeypatch.setattr(ORBIT_SCRIPT.FUVDetector, "from_files", fail)
+
+    with pytest.raises(RuntimeError, match="orbit 0042 failed"):
+        ORBIT_SCRIPT.process_orbit(
+            42,
+            tmp_path,
+            tmp_path / "output",
+            "current_fuvpy_v1",
+            "test",
+        )

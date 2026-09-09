@@ -1,8 +1,11 @@
 # Proposed Modular Pipeline Redesign
 
-Last reviewed: 2026-08-11
-Status: Product stages confirmed on `modular_pipeline`; native Product 1 and
-the initial Product-2 boundary are implemented and verified
+Last reviewed: 2026-09-01
+Status: Implemented bin-first redesign retained as a description of the live
+`modular_pipeline` branch. Its future architecture is superseded by
+[[Detector-First Product Architecture]], which coregisters SI onto WIC before
+precipitation and delays Cubed-Sphere binning until after the detector-level
+physical products.
 
 ## Motivation
 

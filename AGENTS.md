@@ -28,9 +28,11 @@ Before substantive work, read:
 2. `vault/05_Handoff/Handoff - Latest.md`
 3. `vault/01_Project/Project Brief.md`
 
-Read `vault/02_Algorithm/Processing Pipeline.md` when changing the
-processing workflow. Treat the older dated notes and images at the vault root
-as historical evidence, not current instructions.
+Read `vault/02_Algorithm/Processing Pipeline.md` when inspecting the live
+workflow. Read `vault/02_Algorithm/Detector-First Product Architecture.md`
+when changing or discussing the intended publication pipeline. Treat the
+older dated notes and images at the vault root as historical evidence, not
+current instructions.
 
 Use this source-of-truth order:
 

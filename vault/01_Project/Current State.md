@@ -1,11 +1,270 @@
 # Current State
 
-Last reviewed: 2026-08-31
-Repository snapshot: `modular_pipeline` at `6d24a06`
+Last reviewed: 2026-09-03
+Repository snapshot: `modular_pipeline` at `aad3f00`
 Worktree state: debugging additions and regenerated example figures are
+uncommitted; the detector-first architecture and experimental detector
+Product-1 and image-ratio detector Product-2 implementations are also
 uncommitted
 
+## Target product architecture
+
+The accepted target is now detector-first rather than bin-first. WIC defines
+the canonical observation geometry. SI12 and SI13 are corrected on their
+native detector grids and coregistered onto the WIC detector pixels. Product 1
+stores those aligned FUV observations; Product 2 calculates precipitation on
+the WIC detector geometry; Product 3 applies the conductance forward model on
+the same geometry.
+
+Only afterward are Product 2 and Product 3 mapped independently to one fixed
+Cubed-Sphere grid for the VAE, covariance, sparse-reconstruction, and spline
+workflows. `conductance_cs` must be obtained by binning detector-level
+conductance, not by applying the nonlinear forward model to binned
+precipitation. A separate SI Cubed-Sphere product is not part of the target
+path.
+
+The first experimental detector-first slice is now implemented without
+replacing the existing bin-first production path. `icbuilder/fuvdetector.py`
+loads the current fuvpy WIC `shimg` and SI12/SI13 `dgimg` fields, preserves the
+WIC detector and time axes, matches each SI camera independently, applies the
+established SI-footprint-to-WIC overlap mapping, and writes schema-1
+`fuv_detector` NetCDF. `scripts/pipeline/make_fuv_detector_orbit_files.py`
+provides WIC-led orbit discovery, structural/configuration validation,
+source-file identity, and atomic restart-safe publication. Its `--workers`
+option processes independent orbits concurrently when greater than one and
+retains the serial path at the default value of one. Restart validation
+now follows the deliberately small pattern used by `binned_file_status()`: it
+directly checks product identity, the requested preprocessing/timing settings,
+selected source paths and image fields, and required array shapes. Stored
+source hashes and software identity remain provenance, not a restart framework,
+and descriptive prose does not control compatibility.
+
+The first 1,687-orbit Halley execution exposed a late-frame geometry edge
+case: finite WIC latitude/longitude can project behind the local tangent plane
+and therefore produce non-finite interpolation coordinates. Those pixels are
+now excluded from the Delaunay input, while the remaining projected WIC
+pixels define the transform. Worker exceptions also report the orbit number.
+Sixteen focused Product-1/coregistration/footprint tests pass.
+
+`icbuilder/precipitationdetector.py` and
+`scripts/pipeline/make_precipitation_detector_orbit_files.py` now implement
+the next experimental boundary: schema-1 `precipitation_detector` using the
+image-ratio method. It retains every Product-1 WIC frame, matches definitive
+GFZ Kp to that existing time axis, evaluates Hardy or constant proton energy
+on each frame's detector coordinates, infers proton flux from mapped SI12,
+proton-corrects WIC and SI13, and calls the shared icPhysics ratio retrieval.
+Cells without all three channels remain in the file but are method-invalid.
+The file copies the Product-1 time, detector geometry, channel support,
+coverage, and quality fields needed to interpret the precipitation state.
+
+The uncertainty fields deliberately retain the existing analytic count model
+only for parity. Product 1 supplies no detector-count uncertainty, mapped-SI
+covariance remains omitted, and the file records those limitations. The
+implemented order maps SI12 counts before proton-flux inference; the documented
+map-versus-infer comparison remains required before this becomes scientific
+policy. The image-ratio path is not the candidate publication retrieval.
+
+This is deliberately labelled `current_fuvpy_v1`, not the publication
+preprocessing choice. WIC frames are processed in stored order. Each SI
+channel selects the nearest unused frame within two seconds; ties select the
+earlier SI time and then the lower source index. Unmatched channels retain the
+WIC frame with NaN counts/weights, zero coverage and source count, and source
+index `-1`. Detector noise is explicitly unavailable rather than inferred
+from the old within-bin spread. The sparse overlap operator is not yet stored.
+
+An isolated run on the tracked 20-frame orbit-0085 excerpt completed in
+142.69 seconds and wrote an 18.94-MB `(20, 256, 256)` product. All 20 frames
+matched both SI channels within zero to one second. Finite detector support
+was 33.42% for WIC, 32.33% for SI12, and 31.31% for SI13. Stored coverage is
+bounded by one, all three recorded source hashes reproduce, and an immediate
+restart skipped the complete product. This verifies the experimental path and
+serialization, not a complete orbit or publication configuration. The run
+time is too high for a corpus and makes coregistration profiling/optimization
+the next implementation task.
+
+The established bin-first Product 1 and WIC-CS Product 2/3 remain available.
+The grid-bound 36-by-36 Zhang--Paxton lookup will need a grid-independent
+`(Kp, MLT)` interface before it can operate on per-frame detector geometry.
+The migration also requires a detector-noise model and a test of whether SI12
+counts should be mapped before or after proton-flux inference; the present
+within-bin `sigma` is not detector measurement uncertainty.
+The full architecture and unresolved choices are in
+[[Detector-First Product Architecture]].
+
+Focused detector Product-1/Product-2 and existing precipitation tests pass
+(`33 passed`). The full suite has `89 passed, 4 failed`; all four
+failures are the previously recorded conflict between the live 46-by-46 CS
+grid and tests/bundled Zhang--Paxton data that still require 36 by 36.
+
 ## Current position
+
+The first controlled historical-background comparison is complete without any
+change to the production pipeline. `icbuilder/fuview_background.py` contains
+readable ports of the fixed FUVVIEW lookup, the active `p` routine, and the
+newer active `p2` routine. The driver
+`scripts/debugging/compare_fuview_backgrounds.py` starts all four branches from
+the same native detector `img` fields, retains current fuvpy as the fourth
+branch, and applies the same detector coregistration, Hardy proton correction,
+50/3 signal guard, and Frey inversion afterward. It has run for orbits 0364,
+0459, 0968, and 0085. Figures and exact statistics are under
+`figures/debugging/fuview_background/`.
+
+The active-`p` diagnostic now tests an explicit SZA-100 continuation. The last
+few fitted bins below SZA 105 degrees turn downward because their median
+windows overlap the zero-filled edge of the fitting image. Freezing only the
+scale did not solve this because the reference background `B0` had already
+fallen toward zero. The revised experiment therefore holds the complete
+DZA-dependent product `B0(DZA, 100) * scale(100)` at every larger SZA. The
+historical zero fallback remains the function default; the comparison script
+requests and labels this experimental treatment.
+
+On support shared by all four methods, the four-event mean fraction of pixels
+above Frey's maximum tabulated ratio (`R=136.486`) is 45.3% for the fixed
+lookup, 21.3% for active `p` with the SZA-100 continuation, 25.9% for active
+`p2`, and 16.1% for current fuvpy. The corresponding mean median ratios are
+200.4, 85.0, 96.4, and 65.8. The revised continuation improves active `p`
+substantially over the previous scale-only/final-column treatment (107.9 and
+31.6%), although it remains worse than current fuvpy overall. The standard
+figures and statistics under `figures/debugging/fuview_background/` have been
+regenerated with the revised treatment.
+The ordering varies by event: `p2` is modestly better than fuvpy for the strong
+orbit-0968 frame but worse for the other three shared-support comparisons.
+Thus the background choice matters, but these historical alternatives do not
+provide evidence that background subtraction alone resolves the high
+WIC/SI13 ratios.
+
+The Coumans FAST pass is now the first independent check of the four branches.
+`compare_fuview_backgrounds_fast.py` recalculates all nine IMAGE frames over
+the pass and samples them at the FAST footprint mapped to 120 km. Active `p2`
+retains 155 samples and current fuvpy retains 132. On each method's own support,
+their median absolute energy errors are 1.42 and 1.91 keV, respectively, but
+`p2` reaches the 25-keV Frey fallback and has the worse common-support upper
+error tail. This is not a decisive improvement: `p2` improves the central
+error while introducing more severe outliers.
+
+The fixed branch retains the historical zero-background fallback outside the
+table. Active `p` was also tested that way first: it retained 226 FAST samples,
+with median IMAGE energy 6.83 keV and median absolute error about 4.30 keV. The
+previously recorded FAST result for an active-`p` edge used the superseded
+scale-only/final-column continuation and must not be attributed to the revised
+SZA-100 treatment. The FAST pass has not yet been rerun for the new treatment.
+The lookup-support and continuation masks remain separate, and the optional
+WIC detector-bias surface remains omitted because its count-space
+transformation is ambiguous after calibration.
+
+The orbit-0968 `p2` failure is different. Its local scale field becomes
+unstable near SZA 100--110: WIC scale quantiles are 1.64 (median), 14.7 (90th),
+58.2 (95th), and 89.8 (maximum), versus 1.13, 3.71, 5.59, and 7.09 in orbit
+0364. SI13 shows the same behavior. The two-dimensional `binimg/reference`
+field is sparsely observed, zero-excluding-median filtered, and nearest-filled;
+where the quiet reference is small it can interpret science-image counts as a
+very large background. At SZA 110 the source abruptly changes to its minimum
+background fallback, producing the sharp discontinuity. This instability is
+in the recovered `p2` method, not in the SI-only repair. Selected DMSP crossings
+remain the repeatability test; production integration is not justified.
+
+The underlying ports are source-faithful but not a bit-for-bit historical
+replay; the active-`p` SZA-100 continuation is an explicitly new experiment. The
+saved NetCDF `img` fields are already calibrated and WIC was reflattened by
+fuvpy, so the test omits the ambiguous detector-bias/raw-flat-field wrapper
+steps. The literal `p2` source is also broken for SI12/SI13 because `min_avg`
+is defined only in the WIC branch. The port labels and tests the minimal repair
+of calculating the same positive table minimum independently for each sensor.
+It preserves the less obvious source behavior: `p` uses a zero-inclusive 9 by
+9 median and one scale per SZA, while `p2` uses an up-to-11 by 11 zero-excluding
+median and a filled two-dimensional SZA/DZA scale field. Eleven focused
+background/coregistration tests pass.
+
+F10.7 and clock-angle stages remain tabled. The FUVIEW3 archive names
+`get_f107_for_time_p.pro`, `correct_f107_p.pro`, and
+`image_bckgnd_clock_correct.pro`, but does not contain those routines or the
+required support coefficients. Both active source branches bypass F10.7 in
+normal active operation. Adding either correction now would therefore be a
+new sensitivity experiment rather than a faithful completion of this test.
+
+The source chronology does not prove which routine produced Frey et al.
+(2003), but it favors the fixed quiet-time model. Frey's Section 7 describes a
+quiet-observation SZA/DZA model with instrument-sensitivity and F10.7
+adjustments; it never mentions rescaling the model from the current science
+frame. The recovered active path is labelled as new work on 28 June 2002 and
+explicitly disables F10.7. The post-version-5.2 change log says the February
+2003 `p2`/clock-angle changes intended to improve dayglow correction were left
+unimplemented because they did not work inside FUVVIEW, and the wrapper keeps
+the `p2` call commented. Thus Frey certainly did not document `p2`; fixed is
+the best-supported interpretation, while active `p` cannot be excluded solely
+from the available source history.
+
+`recreate_frey_figure16.py` now accepts `--image-source fixed` and applies the
+recovered quiet-time lookup independently on the native WIC, SI12, and SI13
+detector grids before the established coregistration and precipitation steps.
+The orbit-0364 Hardy-plus-50/3 result is
+`frey_figure16_or_0364_fixed_hardy_mask50_3.{png,pdf}`. It contains widespread
+energy saturation above the 10-keV display limit and is not visually closer to
+Frey's final-energy panel than the current reconstruction. This rejects the
+available bare fixed lookup, not Frey's complete historical procedure: the
+published F10.7 adjustment and exact raw calibration order remain absent.
+
+The same script now accepts `--image-source active_p` for the recovered,
+source-faithful active-p scaling with its original zero fallback. The generated
+`frey_figure16_or_0364_active_p_hardy_mask50_3.{png,pdf}` omits the unavailable
+WIC bias and F10.7 stages explicitly. It removes some scattered high-energy
+area relative to the bare fixed lookup, but the main oval still saturates
+extensively above 10 keV and does not resemble Frey's final-energy panel.
+
+The experimental `--image-source active_p_edge100` branch holds both the scale
+and full background at SZA 100 degrees. Its output is
+`frey_figure16_or_0364_active_p_edge100_hardy_mask50_3.{png,pdf}`. It improves
+the orbit-0364 common-support median ratio from 103.7 to 72.9 and reduces the
+fraction above Frey's ratio ceiling from 32.7% to 20.5%, but the reconstructed
+energy map still contains extensive saturation and does not reproduce Frey's
+final panel.
+
+The 23 December 2000 Coumans Figure-5 reconstruction now includes the native
+WIC context image at 21:00:16 UT with the FAST trajectory mapped to 120 km.
+The result is
+`figures/debugging/coumans_2004/coumans_2004_figure5a_reconstruction.{png,pdf}`.
+It uses the fuvpy-corrected WIC `shimg` field and does not enter the
+quantitative ratio calculation. In the published Figure 5,
+the blue `<E> model` curves are independent Kp-dependent DMSP climatologies:
+Hardy et al. (1985) electron mean energy in panel b and the Hardy ion model
+(caption: Hardy et al. 1991; related 1989 coefficients) in panel c.
+
+Coumans section 4.1.2 explicitly fixes the context image at 21:00 UT, so the
+available 21:00:16 frame is correct. Nearby-frame inspection found no better
+timestamp or orientation. The remaining visual mismatch is processing: the
+published image retains the smooth, saturated limb characteristic of the
+historical quiet-time-airglow background/display path, whereas current fuvpy
+`shimg` has a different residual structure. Raw `img` happens to restore the
+outer crescent but is not evidence that Coumans used uncorrected counts.
+The reconstruction already masks WIC pixels at `DZA >= 75 degrees`. A
+21:00:16 sensitivity check showed that the brightest 0.5 percent of `shimg`
+pixels have median DZA 70.1 degrees and 95th-percentile DZA 74.5 degrees.
+Limits of 60--65 degrees remove the published-looking crescent, while 70--75
+degrees retain most of it. A historical cutoff is therefore plausible, but it
+cannot by itself explain the different smooth limb/background structure and
+was likely no stricter than about 70 degrees if that crescent was retained.
+A companion DZA map for the same frame and FAST footprint, with 60-, 70-, and
+75-degree contours, is stored as
+`figures/debugging/coumans_2004/coumans_2004_figure5a_dza.{png,pdf}`.
+The matching SZA panel, including the 90-degree terminator, is
+`coumans_2004_figure5a_sza.{png,pdf}` in the same directory.
+
+The often-repeated `SI13 > 10 counts pixel-1` threshold is confirmed verbatim
+for Mende et al. (2003), but only for that paper's February 2002 FAST event;
+it is not presented as a mission-wide validated threshold. The methods state
+that SI12 proton-induced counts were removed from WIC and SI13, SI12 was
+smoothed with a 2.5-pixel filter for the proton flux, the ratio was evaluated
+only above the SI13 threshold, and the FAST electron flux was smoothed for one
+minute. They do not state a quantitative WIC/SI13 background-removal method,
+the WIC/SI13 smoothing kernel, or whether the 10-count guard was applied
+before or after proton subtraction. Those details cannot be imported from a
+different Mende paper without evidence.
+
+The complete Hardy, image-ratio, footprint-weighted Product-2 rerun is at
+`/home/bing/Dropbox/work/data/IMAGE_FUV/=precipitation_IR_hardy_weighted`.
+All 1,684 orbit files were opened successfully: they contain 450,601 frames,
+all identify schema 2, `image_ratio`, Hardy proton energy, and SI12 proton
+flux, and all contain the required Ep/Fp and electron-precipitation fields.
 
 The modular Product-2 proton correction now separates the event-specific
 proton-flux source from the proton-energy model. SI12 remains the flux source,
@@ -35,25 +294,35 @@ table/source audit, or the synthetic coregistration checks. Repeat those
 sensitivities using every native WIC/SI12/SI13 IDL frame from at least one
 complete orbit before using them scientifically.
 
-The excessive WIC/SI13 ratios are now confirmed across the complete local
-image-ratio corpus under the existing fixed 2-keV proton correction. A
-streaming audit of 1,684 Product-2 orbit files and 450,601 frames found that
-38.34% of all positive post-proton pixel-frames lie above the Frey-table
-maximum `R=136.486`. A diagnostic signal guard of
-`WIC >= 50` and `SI13 >= 3` reduces this to 14.48%; increasing the SI13 cutoff
-to 5, 10, and 20 counts still leaves 11.42%, 8.50%, and 6.40%. These are
-descriptive counts of correlated pixel-frames, not independent observations.
-Weak SI13 explains much of the extreme tail but not the complete failure.
-Repeat these exact post-correction statistics after Hardy becomes the default
-proton-energy model; the pre-proton ratio problem is independent of that
-change.
+The complete Hardy corpus has now been compared orbit-for-orbit with the
+matched footprint-weighted fixed-2-keV corpus. Both contain the same 1,684
+orbits and 450,601 frames; time and WIC source indices match in every file, and
+a sampled paired file has identical input sensor arrays, weights, grid, and Kp.
+On each product's own positive support, 36.43% of fixed-2-keV ratios and 38.16%
+of Hardy ratios exceed the Frey-table maximum `R=136.486`. The diagnostic
+`WIC >= 50`, `SI13 >= 3` guard reduces these values to 13.55% and 14.37%,
+respectively.
 
-Proton correction does not create the problem: the per-orbit pre- and
-post-proton fractions remain close to one-to-one. The guarded failure fraction
-has recurring seasonal structure and is more strongly associated with WIC
-weight and SI13 coverage than with Kp. This narrows the likely cause toward an
-observation, calibration, or preprocessing effect, while illumination,
-background, viewing conditions, and detector calibration remain confounded.
+The stricter paired comparison gives the same conclusion. On 59,152,481 grid
+cell-frames that pass the signal guard under both corrections, the out-of-range
+fraction rises from 13.47% at fixed 2 keV to 14.36% with Hardy. Hardy moves
+536,272 cells from below to above the Frey limit and only 14,485 in the other
+direction. It lowers the ratio in 51.57% of common guarded cells, raises it in
+40.80%, and leaves 7.63% numerically equal, so the central response is modest
+but the upper tail worsens. Hardy also leaves substantially less positive
+support: 17,169,634 cells are valid only under the fixed correction versus
+3,173,793 only under Hardy. The orbit-balanced sample has median Hardy proton
+energy 4.94 keV, and 29.76% of common guarded cells have energy clipped to the
+0.47--46.7-keV camera-response range.
+
+Hardy therefore improves the physical provenance and reproduces Frey's stated
+choice of proton model, but it does not repair the excessive WIC/SI13 ratio or
+make the Frey electron-energy inversion reliable. The remaining failure still
+points to the observation/calibration/preprocessing or response-compatibility
+problem. These are descriptive counts of correlated grid cell-frames, not
+independent observations. The paired code and outputs are
+`compare_hardy_fixed_proton_corpus.py` and
+`figures/debugging/hardy_fixed_proton_comparison/`.
 
 The partial-frame orbit-0968 stage budget suggests against several simple fixes
 but cannot rule them out at orbit level.
@@ -1371,6 +1640,80 @@ sharp feature geometrically, but it can suppress one side of weak aurora and
 create an apparent displacement or a strongly biased ratio. The clean test is
 to compare raw, BS-only, and SH-corrected WIC/SI13 on the same common-resolution
 grid before proposing either a coupled background model or image warping.
+
+The historical full-polar background was nevertheless more instrument-specific
+than the active fuvpy fit. Frey describes a quiet-time dayglow response model
+constructed for each instrument and adjusted for viewing geometry, sensitivity,
+and F10.7; Coumans likewise says the quiet-time airglow was determined
+individually for each camera. In contrast, fuvpy applies the same BS/SH model
+form and default fitting controls to WIC, SI12, and SI13, apart from
+camera-specific masks and WIC re-flattening. This is a real recipe difference,
+but there is no evidence that the historical method used a coupled WIC/SI13
+background fit. If background is responsible, the missing ingredient is more
+likely the camera-specific reference/calibration used by the old quiet-time
+model than statistical coupling between the two fitted backgrounds.
+
+Several documented safeguards and response assumptions weaken the impression
+that the historical inverse was uniformly quantitative. The Frey response table
+is a nadir calculation with a fixed moderately disturbed MSIS-90 atmosphere.
+Frey explicitly reports an additional disturbed-atmosphere correction for a
+FAST event where enhanced oxygen absorption raised WIC/SI13 and produced
+unreasonable energy; Meurant's 30-percent neutral-composition sensitivity moved
+the retrieved energy by about 16 percent at ratio 120. Coumans caps retrieved
+electron energy at 15 keV, attributes two false DMSP-comparison peaks to WIC
+background subtraction, and concludes that WIC/SI13 is a good morphology
+indicator while its quantitative values are often overestimated. These effects
+are real, but the published sensitivities are not individually large enough to
+explain the complete corpus-wide high-ratio tail.
+
+The reviewed direct IMAGE inverse validations are not independent replications:
+Frey, Meurant, Coumans, Hubert, and Mende share authors, transport models,
+calibration knowledge, and processing lineage. One genuinely independent
+observed-IMAGE reimplementation was identified: Gasparini et al. (2024) used
+the Frey tables with a 250-km grid, three-frame averaging, SI12 correction, and
+50/3 WIC/SI13 count guards. It assumes the inversion while studying downstream
+uncertainty and does not validate retrieved electron energy against particles.
+Galand and Lummerzheim (2004) independently support the forward response
+physics but do not invert IMAGE observations. No peer-reviewed in-situ
+validation independent of the original collaboration was found. Mende et al.
+(2003), within that collaboration, applied the ratio only for SI13 above 10
+counts per pixel, a stricter safeguard than the later three-count criterion.
+
+The first Coumans Figure-5b reconstruction is now implemented in
+`scripts/debugging/reconstruct_coumans_figure5b.py`. It reads the official FAST
+electron survey distribution for 23 December 2000, applies its validity, quality,
+active-bin, and calibration-bin flags, obtains mean energy as energy flux divided
+by number flux, and maps FAST to the paper's 120-km shell using an SSCWeb
+ephemeris subset. The mapped track spans 60.0--81.7 degrees modified-Apex latitude and
+4.58--6.96 MLT, agreeing with Coumans' stated 57--81 degrees and 04:18--08:30
+MLT. The mapped bounce loss cone is 28.9--36.0 degrees.
+
+Coumans does not document its FAST low-energy, weak-flux, or smoothing rules.
+The explicit diagnostic choice of the mapped loss cone, energies at or above
+50 eV, and a centred 10-s mean reaches 4.29 keV, close to the paper's stated
+4.5-keV FAST maximum. Including the lowest valid EESA channels materially lowers
+the moment, so this agreement is encouraging but not yet an exact reproduction.
+On the same track, the current Hardy-proton image-ratio product has 137 samples
+passing the 50/3 count guard and reaches 11.41 keV, whereas Coumans' published
+WIC/SI13 curve peaks near 1.5 keV. The figure is stored as
+`figures/debugging/coumans_2004/coumans_2004_figure5b_reconstruction.{png,pdf}`.
+The next refinement is to establish the historical FAST energy/flux guard and
+then reconstruct IMAGE directly in detector space; the proton panel can wait.
+
+A physical composition or angle correction is possible, but not as one scalar
+multiplier. The least-assumptive composition test is the published Meurant
+envelope: standard O/N2 column ratio 0.52 versus 0.37, which changed a ratio-120
+retrieval by about 16 percent. This can be digitized as a nuisance-model
+sensitivity but cannot supply event-specific oxygen from IMAGE alone. A full
+angle model requires offline WIC and SI13 response tables versus electron
+energy, DZA, and atmosphere, including line-of-sight O2 absorption and the two
+camera spectral responses. It should apply separate response factors to source
+pixels before aggregation; evaluating one mean DZA or multiplying both cameras
+by `cos(DZA)` is not equivalent. Product 1 retains SZA/DZA, but Product 2
+currently drops them, and the required historical F10.7/F10.7A/Ap, geodetic
+location, spectral response curves, and radiative-transfer inputs are not yet
+assembled. Treat this as a substantial optional forward-model project after the
+published composition envelope is tested, not as the next quick repair.
 
 WIC integrates for approximately 10 s, while SI12 and SI13 integrate for
 approximately 5 s. The Frey electron response tables already express WIC and

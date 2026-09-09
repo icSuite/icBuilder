@@ -1,6 +1,51 @@
 # Decision Log
 
-Last reviewed: 2026-08-05
+Last reviewed: 2026-09-03
+
+## 2026-09-03 — Keep Product-1 restart status direct
+
+**Decision:** Follow the existing `binned_file_status()` pattern for detector
+Product 1. In one direct function, check product type/schema, the requested
+preprocessing label and time tolerance, selected source paths and image fields,
+and required array shapes. Keep the four statuses `missing`, `invalid`,
+`mismatch`, and `complete`.
+
+Do not add a processing-configuration document, fingerprint layer, detailed
+status API, or source-file hashing to restart discovery. Source SHA-256 values
+and software identity remain stored in the product as provenance, but do not
+turn the orbit script into an integrity-validation framework. Explanatory
+attributes do not decide compatibility.
+
+**Rationale:** This is a scientific processing script used by a small research
+group. The earlier validation code obscured the processing workflow and
+duplicated information already recorded in the NetCDF file and source-control
+history. Restart status only needs enough evidence to avoid mistaking an
+obviously incomplete or differently configured orbit file for finished work.
+
+## 2026-09-01 — Make the publication pipeline detector-first
+
+**Decision:** Treat WIC detector geometry as the canonical geometry for
+Products 1--3. Correct each sensor on its native detector grid, coregister
+SI12 and SI13 onto WIC detector pixels, then calculate precipitation and
+conductance before mapping completed products to a fixed Cubed-Sphere grid.
+
+The regular-grid products are derived representations. In particular,
+`conductance_cs` is the binned form of `conductance_detector`; it is not
+conductance recalculated from `precipitation_cs`. A separate SI Cubed-Sphere
+stage is removed from the target architecture. Storage is not a limiting
+design constraint.
+
+**Rationale:** Coregistration is an instrument-geometry problem, whereas the
+Cubed-Sphere grid is an analysis representation needed by the VAE, covariance,
+and spline workflows. Separating them prevents an SI interpolation grid from
+becoming part of the physical retrieval, preserves the best available sensor
+geometry, and allows detector products to be rebinned without repeating the
+physics. Binning after the nonlinear conductance model also avoids assuming
+that spatial averaging and the forward model commute.
+
+The fixed grid, file names, schemas, uncertainty propagation, and arbitrary-
+MLT Zhang--Paxton lookup remain open implementation decisions. See
+[[Detector-First Product Architecture]].
 
 ## 2026-08-05 — Use orbit products as restart records
 

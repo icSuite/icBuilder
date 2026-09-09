@@ -43,3 +43,16 @@ def test_area_mapping_rejects_insufficient_coverage():
     assert np.isnan(mapped[0, 0])
     assert mapped[0, 1] == 5
     assert np.allclose(coverage, [[0.8, 0.9]])
+
+
+def test_wic_transform_excludes_pixels_behind_the_local_projection():
+    wic = regular_camera("WIC", size=16, spacing=0.05)
+
+    # A finite but geographically isolated source pixel can lie behind the
+    # tangent plane. It is not a usable interpolation point.
+    wic["glat"][0, 0, 0] = -70
+    wic["glon"][0, 0, 0] = 180
+
+    transform = make_wic_transform(wic, frame=0)
+
+    assert transform["shape"] == (16, 16)

@@ -1,6 +1,12 @@
 # Processing Pipeline
 
-Last reviewed: 2026-08-14
+Last reviewed: 2026-09-01
+
+> [!NOTE]
+> This note describes the live, bin-first `modular_pipeline` implementation.
+> The accepted target design is detector-first and is documented in
+> [[Detector-First Product Architecture]]. Do not infer the future product
+> order from the implementation described below.
 
 This note records the durable high-level workflow visible in the README and
 live code. It is orientation, not a claim that the full production dataset was
