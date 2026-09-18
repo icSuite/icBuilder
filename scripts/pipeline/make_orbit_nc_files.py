@@ -5,7 +5,7 @@ from pathlib import Path
 import fuvpy as fuv
 import pandas as pd
 import numpy as np
-from multiprocessing import Pool
+from multiprocessing import Pool, freeze_support
 import argparse
 
 #%% Selected fuvpy preprocessing configuration
@@ -37,44 +37,21 @@ def str2bool(v):
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
-parser = argparse.ArgumentParser(description="Process FUV data.")
+def parse_args():
+    parser = argparse.ArgumentParser(description="Process FUV data.")
 
-parser.add_argument('--do_wic', type=str2bool, default=True, help='Process WIC data (default True)')
-parser.add_argument('--do_s12', type=str2bool, default=True, help='Process SI12 data (default True)')
-parser.add_argument('--do_s13', type=str2bool, default=True, help='Process SI13 data (default True)')
-parser.add_argument('--parallel', type=str2bool, default=False, help='Run in parallel (default False)')
-parser.add_argument('--pool_size', type=int, default=10, help='Size of pool (default 10)')
-parser.add_argument('--base_input', '--base', dest='base_input', type=str,
-                    default=str(pjoin(Path(__file__).resolve().parents[2], 'example_data')),
-                    help='Base directory containing orbit indices and raw IDL data')
-parser.add_argument('--base_output', type=str, default=None,
-                    help='Base directory for orbit products; defaults to base_input')
+    parser.add_argument('--do_wic', type=str2bool, default=True, help='Process WIC data (default True)')
+    parser.add_argument('--do_s12', type=str2bool, default=True, help='Process SI12 data (default True)')
+    parser.add_argument('--do_s13', type=str2bool, default=True, help='Process SI13 data (default True)')
+    parser.add_argument('--parallel', type=str2bool, default=False, help='Run in parallel (default False)')
+    parser.add_argument('--pool_size', type=int, default=10, help='Size of pool (default 10)')
+    parser.add_argument('--base_input', '--base', dest='base_input', type=str,
+                        default=str(pjoin(Path(__file__).resolve().parents[2], 'example_data')),
+                        help='Base directory containing orbit indices and raw IDL data')
+    parser.add_argument('--base_output', type=str, default=None,
+                        help='Base directory for orbit products; defaults to base_input')
 
-args = parser.parse_args()
-
-#%% What data to process, how to do it, and where it is
-
-do_wic = args.do_wic
-do_s12 = args.do_s12
-do_s13 = args.do_s13
-
-parallel = args.parallel
-pool_size = args.pool_size
-
-base_input = args.base_input
-base_output = args.base_output if args.base_output is not None else base_input
-
-print(f'Data settings:\n WIC: {do_wic}\n SI12: {do_s12}\n SI13: {do_s13}\n')
-print(f'Compute settings:\n Parallel: {parallel}\n Pool: {pool_size}\n')
-print(f'Input base set to {base_input}')
-print(f'Output base set to {base_output}')
-
-#%% Import orbit files file 
-
-print('Reading h5 files')
-wicfiles = pd.read_hdf(pjoin(base_input, 'wicfiles.h5'), key='data')
-s12files = pd.read_hdf(pjoin(base_input, 's12files.h5'), key='data')
-s13files = pd.read_hdf(pjoin(base_input, 's13files.h5'), key='data')
+    return parser.parse_args()
 
 #%%
 
@@ -108,7 +85,7 @@ def process_single_orbit(orbit, files, inpath, outpath, reflat, file_prefix):
         print(f'{file_prefix} : {orbit} : failed with error {e}')
         return (orbit, -1)
 
-def background_removal_parallel(files, inpath, outpath, reflat=False):
+def background_removal_parallel(files, inpath, outpath, reflat=False, pool_size=10):
     file_prefix = files['filename'].iloc[0][:3]
     orbits = files['orbit'].unique()
     args_list = [(orbit, files, inpath, outpath, reflat, file_prefix) for orbit in orbits]
@@ -129,7 +106,7 @@ def background_removal_serial(files, inpath, outpath, reflat=False):
 
     return np.array(results)
 
-def background_removal(files, inpath, outpath, reflat=False, parallel=True):
+def background_removal(files, inpath, outpath, reflat=False, parallel=True, pool_size=10):
     """
     Background removal per orbit
 
@@ -145,6 +122,8 @@ def background_removal(files, inpath, outpath, reflat=False, parallel=True):
         Whether to reflatten images
     parallel : bool
         If True, use multiprocessing. If False, run serially.
+    pool_size : int
+        Number of worker processes used when parallel is True.
 
     Returns
     -------
@@ -154,40 +133,62 @@ def background_removal(files, inpath, outpath, reflat=False, parallel=True):
     Path(outpath).mkdir(parents=True, exist_ok=True)
 
     if parallel:
-        return background_removal_parallel(files, inpath, outpath, reflat)
+        return background_removal_parallel(files, inpath, outpath, reflat, pool_size)
     else:
         return background_removal_serial(files, inpath, outpath, reflat)
 
-#%% Run WIC
-if do_wic:
-    inpath  = pjoin(base_input, 'wic_data')
-    outpath = pjoin(base_output, 'wic')
+#%% Run selected sensors
 
-    print('Starting work on WIC')
-    print('Pulling data from: ' + inpath)
-    print('Offlaoding at: ' + outpath)
-    avail_orbit = background_removal(wicfiles, inpath, outpath, reflat=True, parallel=parallel)
-    np.save(pjoin(base_output, 'wic_avail_orbit.npy'), avail_orbit)
+def main():
+    args = parse_args()
 
-#%% Run s12
-if do_s12:
-    inpath  = pjoin(base_input, 's12_data')
-    outpath = pjoin(base_output, 's12')
+    base_input = args.base_input
+    base_output = args.base_output if args.base_output is not None else base_input
 
-    print('Starting work on SI12')
-    print('Pulling data from: ' + inpath)
-    print('Offlaoding at: ' + outpath)
-    avail_orbit = background_removal(s12files, inpath, outpath, parallel=parallel)
-    np.save(pjoin(base_output, 's12_avail_orbit.npy'), avail_orbit)
+    print(f'Data settings:\n WIC: {args.do_wic}\n SI12: {args.do_s12}\n SI13: {args.do_s13}\n')
+    print(f'Compute settings:\n Parallel: {args.parallel}\n Pool: {args.pool_size}\n')
+    print(f'Input base set to {base_input}')
+    print(f'Output base set to {base_output}')
 
-#%% Run s13
-if do_s13:
-    inpath  = pjoin(base_input, 's13_data')
-    outpath = pjoin(base_output, 's13')
+    print('Reading h5 files')
+    wicfiles = pd.read_hdf(pjoin(base_input, 'wicfiles.h5'), key='data')
+    s12files = pd.read_hdf(pjoin(base_input, 's12files.h5'), key='data')
+    s13files = pd.read_hdf(pjoin(base_input, 's13files.h5'), key='data')
 
-    print('Starting work on SI13')
-    print('Pulling data from: ' + inpath)
-    print('Offlaoding at: ' + outpath)
+    if args.do_wic:
+        inpath = pjoin(base_input, 'wic_data')
+        outpath = pjoin(base_output, 'wic')
 
-    avail_orbit = background_removal(s13files, inpath, outpath, parallel=parallel)
-    np.save(pjoin(base_output, 's13_avail_orbit.npy'), avail_orbit)
+        print('Starting work on WIC')
+        print('Pulling data from: ' + inpath)
+        print('Offloading at: ' + outpath)
+        avail_orbit = background_removal(wicfiles, inpath, outpath, reflat=True,
+                                         parallel=args.parallel, pool_size=args.pool_size)
+        np.save(pjoin(base_output, 'wic_avail_orbit.npy'), avail_orbit)
+
+    if args.do_s12:
+        inpath = pjoin(base_input, 's12_data')
+        outpath = pjoin(base_output, 's12')
+
+        print('Starting work on SI12')
+        print('Pulling data from: ' + inpath)
+        print('Offloading at: ' + outpath)
+        avail_orbit = background_removal(s12files, inpath, outpath,
+                                         parallel=args.parallel, pool_size=args.pool_size)
+        np.save(pjoin(base_output, 's12_avail_orbit.npy'), avail_orbit)
+
+    if args.do_s13:
+        inpath = pjoin(base_input, 's13_data')
+        outpath = pjoin(base_output, 's13')
+
+        print('Starting work on SI13')
+        print('Pulling data from: ' + inpath)
+        print('Offloading at: ' + outpath)
+        avail_orbit = background_removal(s13files, inpath, outpath,
+                                         parallel=args.parallel, pool_size=args.pool_size)
+        np.save(pjoin(base_output, 's13_avail_orbit.npy'), avail_orbit)
+
+
+if __name__ == '__main__':
+    freeze_support()
+    main()
