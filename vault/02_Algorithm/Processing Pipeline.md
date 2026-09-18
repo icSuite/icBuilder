@@ -1,6 +1,6 @@
 # Processing Pipeline
 
-Last reviewed: 2026-09-01
+Last reviewed: 2026-09-18
 
 > [!NOTE]
 > This note describes the live, bin-first `modular_pipeline` implementation.
@@ -43,9 +43,14 @@ incompatible files. Common WIC/SI resolution matching is not part of Product
    to orbit intervals and writes sensor-specific HDF5 indices.
 
 2. **Sensor preprocessing**
-   `scripts/make_orbit_nc_files.py` reads the raw images, selects northern
-   observations, applies the `fuvpy` background models, and writes compressed
-   per-sensor orbit NetCDF files plus availability arrays.
+   `scripts/pipeline/make_orbit_nc_files.py` reads the raw images, selects
+   northern observations, reconstructs detector measurement variance and
+   viewing geometry, applies the selected directional BS-only `fuvpy`
+   background model, and writes compressed per-sensor orbit NetCDF files plus
+   availability arrays. The corrected image and quality weight are `dgimg`
+   and `dgweight`; the removed SH fields are not produced. `--base_input`
+   identifies the orbit-index and raw-data tree. `--base_output` identifies the
+   product tree and defaults to the input base when omitted.
 
 3. **Optional inspection and grid choice**
    Background-removal plotting and grid-resolution scripts support inspection.

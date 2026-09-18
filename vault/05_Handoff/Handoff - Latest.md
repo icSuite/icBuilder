@@ -1,11 +1,46 @@
 # Handoff - Latest
 
-Last updated: 2026-09-03
-Repository snapshot: `modular_pipeline` at `aad3f00`
-Worktree state: Hardy Product-2 integration, debugging additions, and
-regenerated example figures are uncommitted; the detector-first architecture
-and experimental detector Product-1/Product-2 implementations are also
-uncommitted
+Last updated: 2026-09-18
+Repository snapshot: `modular_pipeline` at `24a7bbf`
+Worktree state: regenerated example products, debugging additions, and the
+fuvpy orbit-runner compatibility change are uncommitted
+
+## Latest checkpoint: fuvpy BS-only orbit runner
+
+`scripts/pipeline/make_orbit_nc_files.py` now uses the selected fuvpy
+directional BS model directly. `read_idl()` reconstructs measurement variance
+and viewing geometry; `backgroundmodel_BS()` uses the selected
+`legacy_x_azimuth` model, 120/60-minute temporal spacing, damping `1e-2`,
+variance weighting, monotonic fitting with ordinary fallback, and the Spencer
+taper. The removed `backgroundmodel_SH()` API and obsolete `n_tKnots` option
+are no longer called.
+
+The script accepts separate `--base_input` and `--base_output` paths. Inputs
+always contain the orbit-index HDF files and raw sensor directories; products
+and availability arrays are written beneath the output base. Omitting
+`--base_output` makes it equal to `base_input`, and `--base` remains a
+compatibility alias for `--base_input`. Sensor output directories are created
+when absent.
+
+A serial scratch run completed WIC, SI12, and SI13 for example orbits 0085,
+0086, and 0968. All nine products were successful and expose the required
+BS-only corrected image, weight, spread, model components, measurement
+variance, frame-quality, and viewing-geometry fields. Repository-wide Python
+syntax parsing passed. `git diff --check` is clean for the changed orbit
+script; the whole-worktree check still reports pre-existing trailing whitespace
+in `scripts/dmsp/ratio_validation.py`.
+
+A separate-path scratch run then read WIC orbit indices and IDL inputs from the
+tracked example base while writing to a new output base. It created the output
+directory, wrote orbits 0085, 0086, and 0968, and stored three successful
+availability entries. Omitting `--base_output` was also checked and resolved it
+to `base_input` without running a sensor workflow.
+
+The next integration boundary is `icbuilder/fuvdetector.py`: it still expects
+WIC `shimg` and multiplies `dgweight` by `shweight`. The new orbit files provide
+only the selected BS `dgimg`/`dgweight` contract. Update that loader, its
+preprocessing label/provenance, and focused tests before regenerating detector
+Product 1.
 
 ## Latest checkpoint: experimental detector Product 2
 
@@ -2395,19 +2430,17 @@ defensible. Do not combine that support change with the initial E0 comparison.
 ## Portfolio impact
 
 - Central update needed: Yes
-- Changes: the accepted detector-first architecture now has a verified
-  experimental Product-1 implementation plus the first image-ratio
-  precipitation-detector implementation and partial-orbit execution result.
-  Product 3 and the Zhang--Paxton Product-2 path remain bin-first. The next
-  scientific implementation action is the map-versus-infer SI12 test, while
-  the candidate retrieval still requires the grid-independent Zhang--Paxton
-  interface.
+- Changes: the raw-orbit preprocessing runner is now verified against the
+  selected BS-only fuvpy API on all three sensors and three example orbits.
+  The remaining fuvpy integration blocker has moved downstream to the
+  detector Product-1 loader, preprocessing label, and quality-weight contract.
 - Publication relevance: detector products become the canonical observation
   and physical products, while `conductance_cs` remains the analysis-ready
   input for the VAE, covariance, sparse reconstruction, and splines.
-- New dependency: the current 36-by-36 Zhang--Paxton lookup must become a
-  grid-independent `(Kp, MLT)` interface before detector-level Product 2 can
-  use it.
+- Next technical actions: migrate `fuvdetector.py` to BS-only
+  `dgimg`/`dgweight`, complete the selected fuvpy four-orbit validation, then
+  continue coregistration optimization, the SI12 map-versus-infer test, and
+  the grid-independent Zhang--Paxton interface.
 
 ## Entry points
 

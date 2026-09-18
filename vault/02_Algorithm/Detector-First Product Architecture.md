@@ -1,6 +1,6 @@
 # Detector-First Product Architecture
 
-Last reviewed: 2026-09-03
+Last reviewed: 2026-09-18
 
 Status: The detector-first direction is accepted. Choices labelled proposed
 or open below still require a decision or a focused test. This document
@@ -8,7 +8,10 @@ describes the intended architecture. Experimental `current_fuvpy_v1`
 `fuv_detector` and image-ratio `precipitation_detector` slices now implement
 the first two detector-space boundaries. Product 3 and the candidate
 Zhang--Paxton Product 2 still use the current bin-first `modular_pipeline`
-path.
+path. The raw-orbit runner now produces the selected BS-only
+`dgimg`/`dgweight` contract from the new fuvpy API, but the experimental
+`fuv_detector` loader still expects the older WIC `shimg`/`shweight` boundary
+and must be migrated before those slices are end-to-end compatible.
 
 ## Purpose
 
