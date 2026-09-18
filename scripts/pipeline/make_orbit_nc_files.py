@@ -45,7 +45,7 @@ parser.add_argument('--do_s13', type=str2bool, default=True, help='Process SI13 
 parser.add_argument('--parallel', type=str2bool, default=False, help='Run in parallel (default False)')
 parser.add_argument('--pool_size', type=int, default=10, help='Size of pool (default 10)')
 parser.add_argument('--base_input', '--base', dest='base_input', type=str,
-                    default=str(pjoin(Path(__file__).resolve().parents[1], 'example_data')),
+                    default=str(pjoin(Path(__file__).resolve().parents[2], 'example_data')),
                     help='Base directory containing orbit indices and raw IDL data')
 parser.add_argument('--base_output', type=str, default=None,
                     help='Base directory for orbit products; defaults to base_input')
