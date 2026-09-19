@@ -5,7 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "icbuilder"
 version = "0.1"
-dependencies = []
+dependencies = [
+    "apexpy",
+    "netCDF4",
+    "numba",
+    "numpy",
+    "scipy",
+    "tqdm",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
