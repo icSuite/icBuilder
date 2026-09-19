@@ -21,35 +21,49 @@ from icbuilder.fuvdetector import (
     IMAGE_FIELDS,
     PREPROCESSING_LABEL,
     SCHEMA_VERSION,
+    SOURCE_TIME_DECODING,
     TIME_TOLERANCE_SECONDS,
-    FUVDetector)
+    FUVDetector,
+)
 
 
 #%% Product validation and atomic publication
 
-REQUIRED_FRAME_FIELDS = ("wic_counts", "si12_counts", "si13_counts", 
-                         "wic_quality_weight", "si12_quality_weight", "si13_quality_weight", 
-                         "wic_coverage", "si12_coverage", "si13_coverage", 
-                         "wic_valid", "si12_valid", "si13_valid", 
-                         "si12_source_count", "si13_source_count", 
-                         "glat", "glon", "mlat", "mlon", "mlt", "sza", "dza")
+REQUIRED_FRAME_FIELDS = (
+    "wic_counts", "si12_counts", "si13_counts",
+    "wic_variance", "si12_variance", "si13_variance",
+    "wic_quality_weight", "si12_quality_weight", "si13_quality_weight",
+    "wic_coverage", "si12_coverage", "si13_coverage",
+    "wic_valid", "si12_valid", "si13_valid",
+    "si12_source_count", "si13_source_count",
+    "glat", "glon", "mlat", "mlon", "mlt", "sza", "dza",
+)
 
-BASE_REQUIRED_TIME_FIELDS = ("time", 
-                             "wic_source_time", "si12_source_time", "si13_source_time", 
-                             "wic_source_index", "si12_source_index", "si13_source_index", 
-                             "ssalon")
+BASE_REQUIRED_TIME_FIELDS = (
+    "time", "wic_source_time", "si12_source_time", "si13_source_time",
+    "wic_source_index", "si12_source_index", "si13_source_index",
+    "wic_frame_quality", "si12_frame_quality", "si13_frame_quality",
+    "ssalon",
+)
 
-REQUIRED_TIME_FIELDS = BASE_REQUIRED_TIME_FIELDS + tuple(f"{sensor}_coreg_{name}" 
-                                                         for sensor in ("si12", "si13") 
-                                                         for name in (*COREGISTRATION_INTEGER_FIELDS, *COREGISTRATION_FLOAT_FIELDS))
+REQUIRED_TIME_FIELDS = BASE_REQUIRED_TIME_FIELDS + tuple(
+    f"{sensor}_coreg_{name}"
+    for sensor in ("si12", "si13")
+    for name in (*COREGISTRATION_INTEGER_FIELDS, *COREGISTRATION_FLOAT_FIELDS)
+)
 
 def validate_label(label):
     """Require the one preprocessing configuration implemented in this slice."""
 
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", label):
-        raise ValueError("preprocessing label may contain only letters, numbers, _, -, and .")
+        raise ValueError(
+            "preprocessing label may contain only letters, numbers, _, -, and ."
+        )
     if label != PREPROCESSING_LABEL:
-        raise ValueError(f"this implementation supports only {PREPROCESSING_LABEL}; another label requires an explicit preprocessing branch")
+        raise ValueError(
+            f"this implementation supports only {PREPROCESSING_LABEL}; "
+            "another label requires an explicit preprocessing branch"
+        )
     return label
 
 def source_paths(base, orbit, wic_folder, si12_folder, si13_folder):
@@ -58,7 +72,8 @@ def source_paths(base, orbit, wic_folder, si12_folder, si13_folder):
     paths = {
         "wic": base / wic_folder / f"wic_or{orbit:04d}.nc",
         "si12": base / si12_folder / f"s12_or{orbit:04d}.nc",
-        "si13": base / si13_folder / f"s13_or{orbit:04d}.nc"}
+        "si13": base / si13_folder / f"s13_or{orbit:04d}.nc",
+    }
     if not paths["wic"].is_file():
         raise FileNotFoundError(paths["wic"])
     for sensor in ("si12", "si13"):
@@ -70,8 +85,20 @@ def current_software_version(repository):
     """Describe Git plus the exact Product-1 implementation source."""
 
     try:
-        revision = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=repository, check=True, capture_output=True, text=True).stdout.strip()
-        status = subprocess.run(["git", "status", "--porcelain"], cwd=repository, check=True, capture_output=True, text=True).stdout
+        revision = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
     except (OSError, subprocess.CalledProcessError):
         revision = "unknown"
         status = "unknown"
@@ -118,6 +145,8 @@ def fuv_detector_file_status(
                 )
             ):
                 return "mismatch"
+            if getattr(nc, "source_time_decoding", None) != SOURCE_TIME_DECODING:
+                return "invalid"
 
             for sensor in ("wic", "si12", "si13"):
                 source = source_files[sensor]
@@ -128,7 +157,6 @@ def fuv_detector_file_status(
                     != IMAGE_FIELDS[sensor.upper()]
                 ):
                     return "mismatch"
-
             shape = (
                 len(nc.dimensions["time"]),
                 len(nc.dimensions["row"]),
@@ -138,6 +166,23 @@ def fuv_detector_file_status(
                 return "invalid"
             for name in REQUIRED_FRAME_FIELDS:
                 if nc.variables[name].shape != shape:
+                    return "invalid"
+            expected_units = {
+                "counts": "counts",
+                "variance": "counts^2",
+                "quality_weight": "1",
+                "coverage": "1",
+            }
+            for sensor in ("wic", "si12", "si13"):
+                for field, units in expected_units.items():
+                    variable = nc.variables[f"{sensor}_{field}"]
+                    if getattr(variable, "units", None) != units:
+                        return "invalid"
+                frame_quality = nc.variables[f"{sensor}_frame_quality"]
+                if (
+                    getattr(frame_quality, "flag_meanings", None)
+                    != "rejected usable science_ready"
+                ):
                     return "invalid"
             for name in REQUIRED_TIME_FIELDS:
                 if nc.variables[name].shape != (shape[0],):
@@ -224,9 +269,16 @@ def parse_args(argv=None):
         description="Create WIC-detector coregistered IMAGE-FUV orbit files."
     )
     parser.add_argument(
-        "--base",
+        "--base-input", "--base",
+        dest="base_input",
         type=Path,
         default=Path(__file__).resolve().parents[2] / "example_data",
+        help="Base directory containing corrected WIC, SI12, and SI13 orbits.",
+    )
+    parser.add_argument(
+        "--base-output",
+        type=Path,
+        help="Base directory for Product 1 (default: --base-input).",
     )
     parser.add_argument("--wic-folder", default="wic")
     parser.add_argument("--s12-folder", default="s12")
@@ -253,11 +305,15 @@ def main(argv=None):
         raise ValueError("workers must be at least 1")
 
     label = validate_label(args.preprocessing_label)
-    base = args.base.expanduser()
-    output_directory = base / args.output_folder / label
+    base_input = args.base_input.expanduser()
+    base_output = (
+        args.base_output.expanduser()
+        if args.base_output is not None else base_input
+    )
+    output_directory = base_output / args.output_folder / label
     output_directory.mkdir(parents=True, exist_ok=True)
 
-    available = get_orbits(base / args.wic_folder)
+    available = get_orbits(base_input / args.wic_folder)
     if args.orbit is None:
         selected = available
     else:
@@ -271,7 +327,7 @@ def main(argv=None):
     pending = []
     for orbit in selected:
         paths = source_paths(
-            base,
+            base_input,
             int(orbit),
             args.wic_folder,
             args.s12_folder,
@@ -301,7 +357,7 @@ def main(argv=None):
 
     function = partial(
         process_orbit,
-        base=base,
+        base=base_input,
         output_directory=output_directory,
         preprocessing_label=label,
         software_version=software_version,

@@ -64,13 +64,13 @@ def process_single_orbit(orbit, files, inpath, outpath, reflat, file_prefix):
                          measurement_variance=True, poisson_offset=0.5,
                          wic_variance_model='reference', viewing_geometry=True)
         s = s.sel(date=s.hemisphere.date[s.hemisphere == 'north'])
-        s = s.assign({'t_start': np.datetime_as_string(s['date'][0], unit='s')})
 
         if np.all(np.isnan(s['mlat'].values)):
             print(f'Skipping orbit {orbit}, no data')
             return (orbit, 0)
 
         s = fuv.backgroundmodel_BS(s, **BACKGROUND_MODEL_SETTINGS)
+        s = s.assign({'t_start': np.datetime_as_string(s['date'][0], unit='s')})
 
         outfile = pjoin(outpath, f"{file_prefix}_or{str(orbit).zfill(4)}.nc")
         encoding = {var: 

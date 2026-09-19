@@ -1,7 +1,12 @@
 import numpy as np
 from scipy.sparse import csr_matrix
 
-from icbuilder.detector_coregistration import make_si_mapping, make_wic_transform, map_si
+from icbuilder.detector_coregistration import (
+    geographic_to_wic,
+    make_si_mapping,
+    make_wic_transform,
+    map_si,
+)
 
 
 def regular_camera(sensor, size, spacing):
@@ -56,3 +61,41 @@ def test_wic_transform_excludes_pixels_behind_the_local_projection():
     transform = make_wic_transform(wic, frame=0)
 
     assert transform["shape"] == (16, 16)
+
+
+def test_geographic_lookup_skips_missing_detector_coordinates():
+    wic = regular_camera("WIC", size=16, spacing=0.05)
+    transform = make_wic_transform(wic, frame=0)
+
+    latitude = np.full((16, 16), np.nan)
+    longitude = np.full((16, 16), np.nan)
+    latitude[4:6, 4:6] = wic["glat"][0, 4:6, 4:6]
+    longitude[4:6, 4:6] = wic["glon"][0, 4:6, 4:6]
+
+    queried_points = []
+    row_interpolator = transform["row"]
+
+    def record_row_query(points):
+        queried_points.append(len(points))
+        return row_interpolator(points)
+
+    transform["row"] = record_row_query
+    row, column, error = geographic_to_wic(transform, latitude, longitude)
+
+    assert queried_points == [4]
+    assert np.isfinite(row[4:6, 4:6]).all()
+    assert np.isfinite(column[4:6, 4:6]).all()
+    assert np.isfinite(error[4:6, 4:6]).all()
+    assert np.isnan(row[:4]).all()
+    assert np.isnan(column[:4]).all()
+    assert np.isnan(error[:4]).all()
+
+    row, column, error = geographic_to_wic(
+        transform,
+        np.full((4, 4), np.nan),
+        np.full((4, 4), np.nan),
+    )
+    assert np.isnan(row).all()
+    assert np.isnan(column).all()
+    assert np.isnan(error).all()
+    assert queried_points == [4]

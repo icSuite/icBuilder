@@ -100,11 +100,27 @@ def geographic_to_wic(transform, latitude, longitude):
     """Return continuous WIC row/column and the geographic round-trip error."""
     vectors = unit_vectors(latitude, longitude)
     x, y = plane_coordinates(vectors, transform)
-    points = np.column_stack([x.ravel(), y.ravel()])
-    row = np.asarray(transform["row"](points)).reshape(x.shape)
-    column = np.asarray(transform["column"](points)).reshape(x.shape)
+    projected_valid = np.isfinite(x.ravel()) & np.isfinite(y.ravel())
 
-    detector_points = np.column_stack([row.ravel(), column.ravel()])
+    row = np.full(x.size, np.nan)
+    column = np.full(x.size, np.nan)
+    error = np.full(x.size, np.nan)
+    if not np.any(projected_valid):
+        return row.reshape(x.shape), column.reshape(x.shape), error.reshape(x.shape)
+
+    projected_points = np.column_stack([
+        x.ravel()[projected_valid], y.ravel()[projected_valid]
+    ])
+    row[projected_valid] = transform["row"](projected_points)
+    column[projected_valid] = transform["column"](projected_points)
+
+    detector_valid = projected_valid & np.isfinite(row) & np.isfinite(column)
+    if not np.any(detector_valid):
+        return row.reshape(x.shape), column.reshape(x.shape), error.reshape(x.shape)
+
+    detector_points = np.column_stack([
+        row[detector_valid], column[detector_valid]
+    ])
     reconstructed = np.column_stack([
         interpolator(detector_points) for interpolator in transform["vector"]
     ])
@@ -113,9 +129,13 @@ def geographic_to_wic(transform, latitude, longitude):
         reconstructed, length[:, None], out=np.full_like(reconstructed, np.nan),
         where=length[:, None] > 0,
     )
-    cosine = np.sum(reconstructed * vectors.reshape(-1, 3), axis=1)
-    error = IMAGE_RADIUS_KM * np.arccos(np.clip(cosine, -1, 1))
-    return row, column, error.reshape(x.shape)
+    cosine = np.sum(
+        reconstructed * vectors.reshape(-1, 3)[detector_valid], axis=1
+    )
+    error[detector_valid] = (
+        IMAGE_RADIUS_KM * np.arccos(np.clip(cosine, -1, 1))
+    )
+    return row.reshape(x.shape), column.reshape(x.shape), error.reshape(x.shape)
 
 
 def make_si_mapping(si, frame, transform):
@@ -193,5 +213,27 @@ def make_si_mapping(si, frame, transform):
 def map_si(values, valid, mapping, shape, minimum_coverage=MIN_SI_COVERAGE):
     """Area-average one SI field into WIC pixels and require adequate coverage."""
     mapped, coverage = overlap_mean(np.where(valid, values, np.nan), mapping, shape)
+    mapped[coverage < minimum_coverage] = np.nan
+    return mapped, coverage
+
+
+def map_si_variance(
+    variance, valid, mapping, shape, minimum_coverage=MIN_SI_COVERAGE
+):
+    """Propagate independent SI pixel variances through the area mean."""
+
+    variance = np.asarray(variance, dtype=float)
+    valid = np.asarray(valid, dtype=bool) & np.isfinite(variance) & (variance >= 0)
+    weights = np.asarray(mapping @ valid.ravel().astype(float)).ravel()
+    numerator = np.asarray(
+        mapping.power(2) @ np.where(valid, variance, 0).ravel()
+    ).ravel()
+    mapped = np.divide(
+        numerator,
+        weights ** 2,
+        out=np.full(mapping.shape[0], np.nan),
+        where=weights > 0,
+    ).reshape(shape)
+    coverage = weights.reshape(shape)
     mapped[coverage < minimum_coverage] = np.nan
     return mapped, coverage
