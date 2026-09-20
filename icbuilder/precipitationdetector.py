@@ -14,11 +14,17 @@ from icphysics import (
 from netCDF4 import Dataset, date2num, num2date
 
 from .kp import load_gfz_kp, match_gfz_kp
+from .fuvdetector import (
+    PREPROCESSING_LABEL,
+    SCHEMA_VERSION as FUV_SCHEMA_VERSION,
+    SOURCE_TIME_DECODING,
+    source_identity,
+)
 
 
 #%% Product configuration
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 PRECIPITATION_METHOD = "image_ratio"
 PROTON_ENERGY_MODELS = ("hardy", "constant")
 PROTON_FLUX_SOURCE = "SI12"
@@ -27,10 +33,10 @@ PROTON_OPERATION_ORDER = (
     "converted to proton flux on the WIC detector geometry"
 )
 COUNT_UNCERTAINTY_METHOD = (
-    "provisional analytic count model retained for parity: Product 1 supplies "
-    "no detector-count uncertainty, so its additional input uncertainty is "
-    "zero; Poisson count terms and proton-model propagation are evaluated by "
-    "icPhysics; covariance introduced by SI coregistration is not included"
+    "square roots of Product-1 detector-count variances are supplied to "
+    "icPhysics. SI variances already include independent-pixel propagation "
+    "through coregistration; covariance and background-model uncertainty are "
+    "not included"
 )
 HARDY_COORDINATE_NOTE = (
     "Hardy corrected geomagnetic coordinates approximated by Product-1 "
@@ -40,6 +46,7 @@ HARDY_COORDINATE_NOTE = (
 
 FRAME_FIELDS = (
     "wic_counts", "si12_counts", "si13_counts",
+    "wic_variance", "si12_variance", "si13_variance",
     "wic_quality_weight", "si12_quality_weight", "si13_quality_weight",
     "wic_coverage", "si12_coverage", "si13_coverage",
     "wic_valid", "si12_valid", "si13_valid",
@@ -49,6 +56,7 @@ FRAME_FIELDS = (
 TIME_FIELDS = (
     "time", "wic_source_time", "si12_source_time", "si13_source_time",
     "wic_source_index", "si12_source_index", "si13_source_index", "ssalon",
+    "wic_frame_quality", "si12_frame_quality", "si13_frame_quality",
 )
 
 
@@ -57,7 +65,13 @@ TIME_FIELDS = (
 def _as_array(variable, dtype=float):
     values = variable[:]
     if np.ma.isMaskedArray(values):
-        values = values.filled(np.nan)
+        if np.issubdtype(np.dtype(dtype), np.integer):
+            fill_value = -1
+        elif np.issubdtype(np.dtype(dtype), np.bool_):
+            fill_value = False
+        else:
+            fill_value = np.nan
+        values = values.filled(fill_value)
     return np.asarray(values, dtype=dtype)
 
 
@@ -84,12 +98,20 @@ def load_fuv_detector(filename):
         if (
             nc.product_type != "fuv_detector"
             or nc.representation != "detector"
+            or int(nc.schema_version) != FUV_SCHEMA_VERSION
+            or nc.preprocessing_label != PREPROCESSING_LABEL
+            or getattr(nc, "source_time_decoding", None) != SOURCE_TIME_DECODING
         ):
-            raise ValueError(f"{filename} is not a fuv_detector product")
+            raise ValueError(
+                f"{filename} is not a supported schema-{FUV_SCHEMA_VERSION} "
+                f"{PREPROCESSING_LABEL} fuv_detector product"
+            )
 
         product = {
             "source_file": str(filename),
+            "schema_version": int(nc.schema_version),
             "preprocessing_label": nc.preprocessing_label,
+            "source_time_decoding": nc.source_time_decoding,
             "source_software_version": nc.software_version,
             "coordinate_system": nc.coordinate_system,
             "reference_height_km": float(nc.reference_height_km),
@@ -106,7 +128,7 @@ def load_fuv_detector(filename):
         for name in TIME_FIELDS:
             if name.endswith("_time") or name == "time":
                 product[name] = _read_time(nc, name)
-            elif name.endswith("_index"):
+            elif name.endswith("_index") or name.endswith("_frame_quality"):
                 product[name] = _as_array(nc.variables[name], int)
             else:
                 product[name] = _as_array(nc.variables[name])
@@ -114,6 +136,7 @@ def load_fuv_detector(filename):
             dtype = bool if name.endswith("_valid") else float
             product[name] = _as_array(nc.variables[name], dtype)
 
+    product.update(source_identity(filename))
     return product
 
 
@@ -202,7 +225,12 @@ class PrecipitationDetector:
         self.count_uncertainty_method = COUNT_UNCERTAINTY_METHOD
         self.software_version = str(software_version)
         self.source_fuv_detector = fuv["source_file"]
+        self.source_fuv_detector_sha256 = fuv["source_sha256"]
+        self.source_fuv_detector_size_bytes = fuv["source_size_bytes"]
+        self.source_fuv_detector_mtime_ns = fuv["source_mtime_ns"]
+        self.source_fuv_detector_schema_version = fuv["schema_version"]
         self.source_preprocessing_label = fuv["preprocessing_label"]
+        self.source_fuv_detector_time_decoding = fuv["source_time_decoding"]
         self.source_software_version = fuv["source_software_version"]
         self.coordinate_system = fuv["coordinate_system"]
         self.reference_height_km = fuv["reference_height_km"]
@@ -249,15 +277,17 @@ class PrecipitationDetector:
         si13 = np.where(input_valid, self.si13_counts, np.nan)
 
         # 4. Infer proton flux from mapped SI12, then correct WIC and SI13.
-        no_input_uncertainty = np.zeros(self.shape)
+        dwic = np.where(input_valid, np.sqrt(self.wic_variance), np.nan)
+        dsi12 = np.where(input_valid, np.sqrt(self.si12_variance), np.nan)
+        dsi13 = np.where(input_valid, np.sqrt(self.si13_variance), np.nan)
         with np.errstate(divide="ignore", invalid="ignore"):
             corrected = proton_correct_images(
                 wic=wic,
-                dwic=no_input_uncertainty,
+                dwic=dwic,
                 si12=si12,
-                dsi12=no_input_uncertainty,
+                dsi12=dsi12,
                 si13=si13,
-                dsi13=no_input_uncertainty,
+                dsi13=dsi13,
                 proton_energy=self.Ep,
                 proton_energy_uncertainty=self.dEp,
             )
@@ -266,7 +296,7 @@ class PrecipitationDetector:
             setattr(self, name, np.asarray(values, dtype=float))
 
         # 5. Calculate image-ratio electron energy and energy flux.
-        # Keep central values when a provisional uncertainty becomes undefined.
+        # Keep central values when a propagated uncertainty becomes undefined.
         dwic_for_ratio = np.where(
             np.isfinite(self.dwic_corrected), self.dwic_corrected, 0.0
         )
@@ -347,7 +377,20 @@ class PrecipitationDetector:
             nc.proton_response_energy_min = PROTON_RESPONSE_ENERGY_RANGE[0]
             nc.proton_response_energy_max = PROTON_RESPONSE_ENERGY_RANGE[1]
             nc.source_fuv_detector = self.source_fuv_detector
+            nc.source_fuv_detector_sha256 = self.source_fuv_detector_sha256
+            nc.source_fuv_detector_size_bytes = np.int64(
+                self.source_fuv_detector_size_bytes
+            )
+            nc.source_fuv_detector_mtime_ns = np.int64(
+                self.source_fuv_detector_mtime_ns
+            )
+            nc.source_fuv_detector_schema_version = (
+                self.source_fuv_detector_schema_version
+            )
             nc.source_preprocessing_label = self.source_preprocessing_label
+            nc.source_fuv_detector_time_decoding = (
+                self.source_fuv_detector_time_decoding
+            )
             nc.source_software_version = self.source_software_version
             nc.coordinate_system = self.coordinate_system
             nc.reference_height_km = self.reference_height_km
@@ -381,6 +424,16 @@ class PrecipitationDetector:
             ):
                 variable = nc.createVariable(name, "i4", ("time",))
                 variable[:] = getattr(self, name)
+
+            for name in (
+                "wic_frame_quality", "si12_frame_quality", "si13_frame_quality"
+            ):
+                variable = nc.createVariable(
+                    name, "i1", ("time",), fill_value=-1
+                )
+                variable[:] = getattr(self, name)
+                variable.flag_values = np.asarray([0, 1, 2], dtype=np.int8)
+                variable.flag_meanings = "rejected usable science_ready"
 
             for name in ("detector_row", "detector_column"):
                 dimension = "row" if name == "detector_row" else "column"

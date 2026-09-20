@@ -5,17 +5,20 @@
 import argparse
 import os
 import subprocess
+from functools import partial
 from pathlib import Path
 
 import numpy as np
 from netCDF4 import Dataset
 from tqdm import tqdm
+from tqdm.contrib.concurrent import process_map
 
 from icbuilder.kp import load_gfz_kp
 from icbuilder.precipitationdetector import (
     PRECIPITATION_METHOD,
     PROTON_ENERGY_MODELS,
     SCHEMA_VERSION,
+    SOURCE_TIME_DECODING,
     PrecipitationDetector,
 )
 
@@ -37,6 +40,7 @@ FRAME_FIELDS = (
 TIME_FIELDS = (
     "time", "wic_source_time", "si12_source_time", "si13_source_time",
     "wic_source_index", "si12_source_index", "si13_source_index",
+    "wic_frame_quality", "si12_frame_quality", "si13_frame_quality",
     "Kp", "Kp_interval_start", "ssalon",
 )
 
@@ -69,6 +73,11 @@ def precipitation_detector_file_status(
                 or nc.source_fuv_detector != str(source_fuv_detector)
             ):
                 return "mismatch"
+            if (
+                getattr(nc, "source_fuv_detector_time_decoding", None)
+                != SOURCE_TIME_DECODING
+            ):
+                return "invalid"
             if proton_energy_model == "constant" and (
                 not np.isclose(nc.proton_energy_constant, proton_energy)
                 or not np.isclose(
@@ -172,16 +181,22 @@ def process_orbit(
     """Calculate and save one detector-space precipitation orbit."""
 
     source = input_directory / f"or_{orbit:04d}.nc"
-    product = PrecipitationDetector(
-        source,
-        kp_series=kp_series,
-        proton_energy_model=proton_energy_model,
-        proton_energy=proton_energy,
-        proton_energy_uncertainty=proton_energy_uncertainty,
-        software_version=software_version,
-    )
-    output = output_directory / f"or_{orbit:04d}.nc"
-    save_precipitation_detector(product, output)
+    try:
+        product = PrecipitationDetector(
+            source,
+            kp_series=kp_series,
+            proton_energy_model=proton_energy_model,
+            proton_energy=proton_energy,
+            proton_energy_uncertainty=proton_energy_uncertainty,
+            software_version=software_version,
+        )
+        output = output_directory / f"or_{orbit:04d}.nc"
+        save_precipitation_detector(product, output)
+    except Exception as error:
+        raise RuntimeError(
+            f"precipitation_detector orbit {orbit:04d} failed"
+        ) from error
+
     return orbit, product.shape[0]
 
 
@@ -192,12 +207,19 @@ def parse_args(argv=None):
         description="Create image-ratio precipitation on WIC detector pixels."
     )
     parser.add_argument(
-        "--base",
+        "--base-input", "--base",
+        dest="base_input",
         type=Path,
         default=Path(__file__).resolve().parents[2] / "example_data",
+        help="Base directory containing detector Product-1 orbit files.",
     )
     parser.add_argument(
-        "--input-folder", default="fuv_detector/current_fuvpy_v1"
+        "--base-output",
+        type=Path,
+        help="Base directory for Product 2 (default: --base-input).",
+    )
+    parser.add_argument(
+        "--input-folder", default="fuv_detector/fuvpy_bs_directional_v1"
     )
     parser.add_argument("--output-folder", default="precipitation_detector")
     parser.add_argument(
@@ -209,10 +231,15 @@ def parse_args(argv=None):
         "--proton-energy-model",
         choices=PROTON_ENERGY_MODELS,
         default="hardy",
+        help="Proton mean-energy model (default: hardy).",
     )
     parser.add_argument("--proton-energy", type=float, default=2.0)
     parser.add_argument(
         "--proton-energy-uncertainty", type=float, default=0.0
+    )
+    parser.add_argument(
+        "--workers", type=int, default=1,
+        help="Number of orbit workers; 1 runs serially (default: 1).",
     )
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args(argv)
@@ -220,10 +247,17 @@ def parse_args(argv=None):
 
 def main(argv=None):
     args = parse_args(argv)
-    base = args.base.expanduser()
-    input_directory = base / args.input_folder
+    if args.workers < 1:
+        raise ValueError("workers must be at least 1")
+
+    base_input = args.base_input.expanduser()
+    base_output = (
+        args.base_output.expanduser()
+        if args.base_output is not None else base_input
+    )
+    input_directory = base_input / args.input_folder
     retrieval_label = args.retrieval_label or f"IR_{args.proton_energy_model}"
-    output_directory = base / args.output_folder / retrieval_label
+    output_directory = base_output / args.output_folder / retrieval_label
     output_directory.mkdir(parents=True, exist_ok=True)
 
     available = get_orbits(input_directory)
@@ -265,19 +299,29 @@ def main(argv=None):
     kp_series = load_gfz_kp()
     repository = Path(__file__).resolve().parents[2]
     software_version = current_revision(repository)
-    results = []
-    for orbit in tqdm(pending, desc="Create detector precipitation orbits"):
-        results.append(process_orbit(
-            orbit,
-            input_directory,
-            output_directory,
-            kp_series,
-            args.proton_energy_model,
-            args.proton_energy,
-            args.proton_energy_uncertainty,
-            software_version,
-        ))
-    return results
+    function = partial(
+        process_orbit,
+        input_directory=input_directory,
+        output_directory=output_directory,
+        kp_series=kp_series,
+        proton_energy_model=args.proton_energy_model,
+        proton_energy=args.proton_energy,
+        proton_energy_uncertainty=args.proton_energy_uncertainty,
+        software_version=software_version,
+    )
+    if args.workers > 1:
+        return process_map(
+            function,
+            pending,
+            max_workers=args.workers,
+            chunksize=1,
+            desc="Create detector precipitation orbits",
+        )
+
+    return [
+        function(orbit)
+        for orbit in tqdm(pending, desc="Create detector precipitation orbits")
+    ]
 
 
 if __name__ == "__main__":
