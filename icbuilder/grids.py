@@ -7,6 +7,8 @@ builder and orbit-processing script from drifting apart.
 
 from __future__ import annotations
 
+import hashlib
+
 import numpy as np
 from numpy.typing import NDArray
 from secsy import CSgrid, CSprojection
@@ -18,6 +20,57 @@ IMAGE_GRID_LENGTH_METRES = 50_000_000.0
 IMAGE_WIC_RESOLUTION_METRES = 200_000.0
 IMAGE_SI_TARGET_RESOLUTION_METRES = 400_000.0
 IMAGE_GRID_RADIUS_METRES = 6_501_200.0 # 6371.2 + 130
+
+DETECTOR_CS_GRID_ID = "image_apex_130km_46x46_v1"
+DETECTOR_CS_EDGE_MIN = -0.7207488608392238
+DETECTOR_CS_EDGE_MAX = 0.693928331919758
+DETECTOR_CS_EDGE_COUNT = 47
+DETECTOR_CS_COORDINATE_SHA256 = (
+    "50aa89a6bdefc05a8ef003ad7bffb5ea800d7014fd173e16f88f821b1ed465bf"
+)
+
+
+def detector_cs_coordinate_hash(grid: CSgrid) -> str:
+    """Hash the complete fixed-grid coordinate contract."""
+
+    coordinate_arrays = (
+        np.asarray(grid.xi_mesh[0], dtype="<f8"),
+        np.asarray(grid.eta_mesh[:, 0], dtype="<f8"),
+        np.asarray(grid.xi, dtype="<f8"),
+        np.asarray(grid.eta, dtype="<f8"),
+        np.asarray(grid.lat, dtype="<f8"),
+        np.asarray(grid.lon / 15.0 % 24.0, dtype="<f8"),
+    )
+    digest = hashlib.sha256()
+    for values in coordinate_arrays:
+        digest.update(values.tobytes(order="C"))
+    return digest.hexdigest()
+
+
+def make_detector_cs_grid() -> CSgrid:
+    """Return the frozen 46-by-46 detector-product analysis grid."""
+
+    edges = np.linspace(
+        DETECTOR_CS_EDGE_MIN,
+        DETECTOR_CS_EDGE_MAX,
+        DETECTOR_CS_EDGE_COUNT,
+    )
+    grid = CSgrid(
+        CSprojection(IMAGE_GRID_POSITION, IMAGE_GRID_ORIENTATION),
+        IMAGE_GRID_LENGTH_METRES,
+        IMAGE_GRID_LENGTH_METRES,
+        IMAGE_WIC_RESOLUTION_METRES,
+        IMAGE_WIC_RESOLUTION_METRES,
+        edges=(edges, edges),
+        R=IMAGE_GRID_RADIUS_METRES,
+    )
+
+    coordinate_hash = detector_cs_coordinate_hash(grid)
+    if grid.shape != (46, 46) or coordinate_hash != DETECTOR_CS_COORDINATE_SHA256:
+        raise RuntimeError(
+            "detector CS grid does not match the frozen 46-by-46 contract"
+        )
+    return grid
 
 
 def make_wic_grid() -> CSgrid:
