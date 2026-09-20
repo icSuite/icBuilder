@@ -72,6 +72,8 @@ def conductance_detector_file_status(
                 or nc.precipitation_method != source.method
                 or nc.proton_flux_source != source.proton_flux_source
                 or nc.proton_energy_model != source.proton_energy_model
+                or nc.count_uncertainty_mode
+                != source.count_uncertainty_mode
                 or int(nc.source_precipitation_detector_schema_version)
                 != int(source.schema_version)
             ):

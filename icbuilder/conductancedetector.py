@@ -10,6 +10,7 @@ from netCDF4 import Dataset, date2num, num2date
 
 from .fuvdetector import SOURCE_TIME_DECODING, source_identity
 from .precipitationdetector import (
+    COUNT_UNCERTAINTY_MODE,
     PRECIPITATION_METHOD,
     SCHEMA_VERSION as PRECIPITATION_SCHEMA_VERSION,
 )
@@ -17,7 +18,7 @@ from .precipitationdetector import (
 
 #%% Product configuration
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 CONDUCTANCE_MODEL = "robinson"
 CONDUCTANCE_UNCERTAINTY_METHOD = (
     "first-order Robinson propagation of Product-2 dE0, dFe, and varE0Fe; "
@@ -82,6 +83,8 @@ def load_precipitation_detector(filename):
             or nc.representation != "detector"
             or int(nc.schema_version) != PRECIPITATION_SCHEMA_VERSION
             or nc.method != PRECIPITATION_METHOD
+            or getattr(nc, "count_uncertainty_mode", None)
+            != COUNT_UNCERTAINTY_MODE
             or getattr(nc, "source_fuv_detector_time_decoding", None)
             != SOURCE_TIME_DECODING
         ):
@@ -121,6 +124,7 @@ def load_precipitation_detector(filename):
                 nc.proton_response_energy_max
             ),
             "proton_operation_order": nc.proton_operation_order,
+            "count_uncertainty_mode": nc.count_uncertainty_mode,
             "count_uncertainty_method": nc.count_uncertainty_method,
             "coordinate_system": nc.coordinate_system,
             "reference_height_km": float(nc.reference_height_km),
@@ -221,6 +225,9 @@ class ConductanceDetector:
         ]
         self.count_uncertainty_method = precipitation[
             "count_uncertainty_method"
+        ]
+        self.count_uncertainty_mode = precipitation[
+            "count_uncertainty_mode"
         ]
         if self.proton_energy_model == "constant":
             self.proton_energy_constant = precipitation[
@@ -340,6 +347,7 @@ class ConductanceDetector:
             nc.proton_response_energy_min = self.proton_response_energy_min
             nc.proton_response_energy_max = self.proton_response_energy_max
             nc.proton_operation_order = self.proton_operation_order
+            nc.count_uncertainty_mode = self.count_uncertainty_mode
             nc.count_uncertainty_method = self.count_uncertainty_method
             if self.proton_energy_model == "constant":
                 nc.proton_energy_constant = self.proton_energy_constant

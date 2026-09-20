@@ -15,6 +15,7 @@ from tqdm.contrib.concurrent import process_map
 
 from icbuilder.kp import load_gfz_kp
 from icbuilder.precipitationdetector import (
+    COUNT_UNCERTAINTY_MODE,
     PRECIPITATION_METHOD,
     PROTON_ENERGY_MODELS,
     SCHEMA_VERSION,
@@ -76,6 +77,8 @@ def precipitation_detector_file_status(
             if (
                 getattr(nc, "source_fuv_detector_time_decoding", None)
                 != SOURCE_TIME_DECODING
+                or getattr(nc, "count_uncertainty_mode", None)
+                != COUNT_UNCERTAINTY_MODE
             ):
                 return "invalid"
             if proton_energy_model == "constant" and (

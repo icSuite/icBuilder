@@ -24,19 +24,21 @@ from .fuvdetector import (
 
 #%% Product configuration
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 PRECIPITATION_METHOD = "image_ratio"
 PROTON_ENERGY_MODELS = ("hardy", "constant")
 PROTON_FLUX_SOURCE = "SI12"
+COUNT_UNCERTAINTY_MODE = "measurement"
 PROTON_OPERATION_ORDER = (
     "SI12 counts are coregistered onto WIC pixels in fuv_detector, then "
     "converted to proton flux on the WIC detector geometry"
 )
 COUNT_UNCERTAINTY_METHOD = (
-    "square roots of Product-1 detector-count variances are supplied to "
-    "icPhysics. SI variances already include independent-pixel propagation "
-    "through coregistration; covariance and background-model uncertainty are "
-    "not included"
+    "square roots of Product-1 full detector measurement variances are "
+    "supplied to icPhysics without adding a second raw-count Poisson term. "
+    "SI variances already include independent-pixel propagation through "
+    "coregistration; covariance and background-model uncertainty are not "
+    "included"
 )
 HARDY_COORDINATE_NOTE = (
     "Hardy corrected geomagnetic coordinates approximated by Product-1 "
@@ -222,6 +224,7 @@ class PrecipitationDetector:
             proton_energy_uncertainty
         )
         self.proton_operation_order = PROTON_OPERATION_ORDER
+        self.count_uncertainty_mode = COUNT_UNCERTAINTY_MODE
         self.count_uncertainty_method = COUNT_UNCERTAINTY_METHOD
         self.software_version = str(software_version)
         self.source_fuv_detector = fuv["source_file"]
@@ -290,6 +293,7 @@ class PrecipitationDetector:
                 dsi13=dsi13,
                 proton_energy=self.Ep,
                 proton_energy_uncertainty=self.dEp,
+                uncertainty_mode=self.count_uncertainty_mode,
             )
 
         for name, values in corrected.items():
@@ -373,6 +377,7 @@ class PrecipitationDetector:
                 self.proton_energy_uncertainty_method
             )
             nc.proton_energy_coordinate_note = self.proton_energy_coordinate_note
+            nc.count_uncertainty_mode = self.count_uncertainty_mode
             nc.count_uncertainty_method = self.count_uncertainty_method
             nc.proton_response_energy_min = PROTON_RESPONSE_ENERGY_RANGE[0]
             nc.proton_response_energy_max = PROTON_RESPONSE_ENERGY_RANGE[1]

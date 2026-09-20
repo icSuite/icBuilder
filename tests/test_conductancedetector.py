@@ -18,6 +18,7 @@ from icbuilder.conductancedetector import (
 )
 from icbuilder.fuvdetector import SOURCE_TIME_DECODING
 from icbuilder.precipitationdetector import (
+    COUNT_UNCERTAINTY_MODE,
     PRECIPITATION_METHOD,
     SCHEMA_VERSION as PRECIPITATION_SCHEMA_VERSION,
 )
@@ -35,7 +36,7 @@ SPEC.loader.exec_module(ORBIT_SCRIPT)
 
 
 def write_precipitation_detector(path, proton_energy_model="hardy"):
-    """Write the small schema-2 Product-2 input used by focused tests."""
+    """Write the small current-schema Product-2 input used by focused tests."""
 
     shape = (1, 2, 2)
     method_valid = np.array([[[True, True], [True, False]]])
@@ -55,6 +56,7 @@ def write_precipitation_detector(path, proton_energy_model="hardy"):
         nc.proton_response_energy_min = 0.47
         nc.proton_response_energy_max = 46.7
         nc.proton_operation_order = "test operation order"
+        nc.count_uncertainty_mode = COUNT_UNCERTAINTY_MODE
         nc.count_uncertainty_method = "test count uncertainty"
         nc.source_fuv_detector = "fuv_detector/or_0001.nc"
         nc.source_fuv_detector_sha256 = "source-fuv-sha256"
@@ -181,13 +183,25 @@ def test_detector_conductance_netcdf_is_self_describing(tmp_path):
         assert nc.conductance_model == CONDUCTANCE_MODEL
         assert nc.precipitation_method == PRECIPITATION_METHOD
         assert nc.source_precipitation_detector == str(source)
-        assert nc.source_precipitation_detector_schema_version == 2
+        assert (
+            nc.source_precipitation_detector_schema_version
+            == PRECIPITATION_SCHEMA_VERSION
+        )
+        assert nc.count_uncertainty_mode == COUNT_UNCERTAINTY_MODE
         assert nc.source_precipitation_software_version == "product2-test"
         assert nc.software_version == "product3-test"
         assert "one-sided" in nc.conductance_uncertainty_method
         assert nc.variables["P"].units == "S"
         assert nc.variables["method_quality_weight"].units == "1"
         assert nc.variables["conductance_valid"].shape == (1, 2, 2)
+
+    old_schema = tmp_path / "old_schema.nc"
+    product.to_nc(old_schema)
+    with Dataset(old_schema, "r+") as nc:
+        nc.schema_version = 1
+    assert ORBIT_SCRIPT.conductance_detector_file_status(
+        old_schema, source
+    ) == "invalid"
 
     broken = tmp_path / "broken.nc"
     product.to_nc(broken)
@@ -210,7 +224,10 @@ def test_detector_conductance_rejects_wrong_product2_schema(tmp_path):
     with Dataset(source, "r+") as nc:
         nc.schema_version = 1
 
-    with pytest.raises(ValueError, match="supported schema-2"):
+    with pytest.raises(
+        ValueError,
+        match=f"supported schema-{PRECIPITATION_SCHEMA_VERSION}",
+    ):
         ConductanceDetector(source)
 
 

@@ -12,7 +12,11 @@ from icphysics import hardy_ion_precipitation
 from netCDF4 import Dataset
 
 from icbuilder.fuvdetector import FUVDetector, PREPROCESSING_LABEL
-from icbuilder.precipitationdetector import PrecipitationDetector, SCHEMA_VERSION
+from icbuilder.precipitationdetector import (
+    COUNT_UNCERTAINTY_MODE,
+    PrecipitationDetector,
+    SCHEMA_VERSION,
+)
 
 
 SCRIPT = (
@@ -121,6 +125,7 @@ def test_image_ratio_runs_on_product1_detector_geometry(tmp_path):
     assert np.isfinite(
         precipitation.dwic_corrected[precipitation.method_valid]
     ).all()
+    assert precipitation.count_uncertainty_mode == "measurement"
 
     expected_weight = (
         precipitation.wic_quality_weight
@@ -177,7 +182,7 @@ def test_zero_proton_flux_retains_detector_uncertainty(tmp_path):
     with Dataset(source, "r+") as nc:
         valid = nc["si12_valid"][:].astype(bool)
         counts = nc["si12_counts"][:]
-        counts[valid] = -1.0
+        counts[valid] = -10.0
         nc["si12_counts"][:] = counts
 
     precipitation = PrecipitationDetector(
@@ -257,7 +262,10 @@ def test_precipitation_detector_netcdf_is_self_describing(tmp_path):
             == "CF date units and calendar"
         )
         assert nc.software_version == "product2-test"
-        assert "Product-1 detector-count variances" in nc.count_uncertainty_method
+        assert nc.count_uncertainty_mode == COUNT_UNCERTAINTY_MODE
+        assert "Product-1 full detector measurement variances" in (
+            nc.count_uncertainty_method
+        )
         assert "coregistered" in nc.proton_operation_order
 
         expected = {
@@ -287,6 +295,14 @@ def test_precipitation_detector_netcdf_is_self_describing(tmp_path):
         nc.renameVariable("method_valid", "removed_method_valid")
     assert ORBIT_SCRIPT.precipitation_detector_file_status(
         broken, source, "constant", 5.0, 0.5
+    ) == "invalid"
+
+    old_schema = tmp_path / "old_schema.nc"
+    product.to_nc(old_schema)
+    with Dataset(old_schema, "r+") as nc:
+        nc.schema_version = 2
+    assert ORBIT_SCRIPT.precipitation_detector_file_status(
+        old_schema, source, "constant", 5.0, 0.5
     ) == "invalid"
 
     old_time_decoder = tmp_path / "old_time_decoder.nc"
