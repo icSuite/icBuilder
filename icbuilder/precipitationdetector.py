@@ -5,13 +5,14 @@
 from pathlib import Path
 
 import numpy as np
+from icreader import open_product
 from icphysics import (
     PROTON_RESPONSE_ENERGY_RANGE,
     hardy_ion_precipitation,
     precipitation_from_ratio,
     proton_correct_images,
 )
-from netCDF4 import Dataset, date2num, num2date
+from netCDF4 import Dataset, date2num
 
 from .kp import load_gfz_kp, match_gfz_kp
 from .fuvdetector import (
@@ -64,45 +65,18 @@ TIME_FIELDS = (
 
 #%% Product-1 loading
 
-def _as_array(variable, dtype=float):
-    values = variable[:]
-    if np.ma.isMaskedArray(values):
-        if np.issubdtype(np.dtype(dtype), np.integer):
-            fill_value = -1
-        elif np.issubdtype(np.dtype(dtype), np.bool_):
-            fill_value = False
-        else:
-            fill_value = np.nan
-        values = values.filled(fill_value)
-    return np.asarray(values, dtype=dtype)
-
-
-def _read_time(nc, name):
-    variable = nc.variables[name]
-    encoded = variable[:]
-    missing = np.ma.getmaskarray(encoded)
-    decoded = np.full(encoded.shape, None, dtype=object)
-    if np.any(~missing):
-        decoded[~missing] = num2date(
-            np.asarray(encoded)[~missing],
-            variable.units,
-            variable.calendar,
-            only_use_cftime_datetimes=False,
-        )
-    return decoded
-
 
 def load_fuv_detector(filename):
     """Load the Product-1 fields needed by detector precipitation."""
 
     filename = Path(filename)
-    with Dataset(filename) as nc:
+    with open_product(filename) as source:
         if (
-            nc.product_type != "fuv_detector"
-            or nc.representation != "detector"
-            or int(nc.schema_version) != FUV_SCHEMA_VERSION
-            or nc.preprocessing_label != PREPROCESSING_LABEL
-            or getattr(nc, "source_time_decoding", None) != SOURCE_TIME_DECODING
+            source.product_type != "fuv_detector"
+            or source.representation != "detector"
+            or int(source.schema_version) != FUV_SCHEMA_VERSION
+            or source.preprocessing_label != PREPROCESSING_LABEL
+            or source.source_time_decoding != SOURCE_TIME_DECODING
         ):
             raise ValueError(
                 f"{filename} is not a supported schema-{FUV_SCHEMA_VERSION} "
@@ -111,32 +85,34 @@ def load_fuv_detector(filename):
 
         product = {
             "source_file": str(filename),
-            "schema_version": int(nc.schema_version),
-            "preprocessing_label": nc.preprocessing_label,
-            "source_time_decoding": nc.source_time_decoding,
-            "source_software_version": nc.software_version,
-            "coordinate_system": nc.coordinate_system,
-            "reference_height_km": float(nc.reference_height_km),
-            "shape": (
-                len(nc.dimensions["time"]),
-                len(nc.dimensions["row"]),
-                len(nc.dimensions["column"]),
-            ),
-            "detector_row": _as_array(nc.variables["detector_row"], int),
-            "detector_column": _as_array(
-                nc.variables["detector_column"], int
-            ),
+            "schema_version": int(source.schema_version),
+            "preprocessing_label": source.preprocessing_label,
+            "source_time_decoding": source.source_time_decoding,
+            "source_software_version": source.software_version,
+            "coordinate_system": source.coordinate_system,
+            "reference_height_km": float(source.reference_height_km),
+            "shape": source.shape,
+            "detector_row": np.asarray(source.detector_row, dtype=int).copy(),
+            "detector_column": np.asarray(
+                source.detector_column, dtype=int
+            ).copy(),
         }
         for name in TIME_FIELDS:
             if name.endswith("_time") or name == "time":
-                product[name] = _read_time(nc, name)
+                product[name] = np.asarray(
+                    getattr(source, name), dtype=object
+                ).copy()
             elif name.endswith("_index") or name.endswith("_frame_quality"):
-                product[name] = _as_array(nc.variables[name], int)
+                product[name] = np.asarray(
+                    getattr(source, name), dtype=int
+                ).copy()
             else:
-                product[name] = _as_array(nc.variables[name])
+                product[name] = np.asarray(
+                    getattr(source, name), dtype=float
+                ).copy()
         for name in FRAME_FIELDS:
             dtype = bool if name.endswith("_valid") else float
-            product[name] = _as_array(nc.variables[name], dtype)
+            product[name] = np.asarray(source.read(name), dtype=dtype)
 
     product.update(source_identity(filename))
     return product

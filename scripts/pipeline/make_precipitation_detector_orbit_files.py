@@ -9,7 +9,7 @@ from functools import partial
 from pathlib import Path
 
 import numpy as np
-from netCDF4 import Dataset
+from icreader import open_product
 from tqdm import tqdm
 from tqdm.contrib.concurrent import process_map
 
@@ -26,26 +26,6 @@ from icbuilder.precipitationdetector import (
 
 #%% Product validation and atomic publication
 
-FRAME_FIELDS = (
-    "glat", "glon", "mlat", "mlon", "mlt", "sza", "dza",
-    "wic_quality_weight", "si12_quality_weight", "si13_quality_weight",
-    "method_quality_weight",
-    "wic_coverage", "si12_coverage", "si13_coverage",
-    "wic_valid", "si12_valid", "si13_valid", "method_valid",
-    "si12_source_count", "si13_source_count",
-    "Ep_model", "Ep", "dEp", "Ep_clipping_flag", "Fp", "dFp",
-    "wic_corrected", "dwic_corrected",
-    "si13_corrected", "dsi13_corrected",
-    "R", "dR", "E0", "dE0", "Fe", "dFe", "varE0Fe",
-)
-TIME_FIELDS = (
-    "time", "wic_source_time", "si12_source_time", "si13_source_time",
-    "wic_source_index", "si12_source_index", "si13_source_index",
-    "wic_frame_quality", "si12_frame_quality", "si13_frame_quality",
-    "Kp", "Kp_interval_start", "ssalon",
-)
-
-
 def precipitation_detector_file_status(
     filename,
     source_fuv_detector,
@@ -60,53 +40,33 @@ def precipitation_detector_file_status(
         return "missing"
 
     try:
-        with Dataset(filename) as nc:
+        with open_product(filename) as product:
             if (
-                nc.product_type != "precipitation_detector"
-                or nc.representation != "detector"
-                or int(nc.schema_version) != SCHEMA_VERSION
+                product.product_type != "precipitation_detector"
+                or product.representation != "detector"
+                or int(product.schema_version) != SCHEMA_VERSION
             ):
                 return "invalid"
             if (
-                nc.method != PRECIPITATION_METHOD
-                or nc.proton_flux_source != "SI12"
-                or nc.proton_energy_model != proton_energy_model
-                or nc.source_fuv_detector != str(source_fuv_detector)
+                product.method != PRECIPITATION_METHOD
+                or product.proton_flux_source != "SI12"
+                or product.proton_energy_model != proton_energy_model
+                or product.source_fuv_detector != str(source_fuv_detector)
             ):
                 return "mismatch"
             if (
-                getattr(nc, "source_fuv_detector_time_decoding", None)
-                != SOURCE_TIME_DECODING
-                or getattr(nc, "count_uncertainty_mode", None)
-                != COUNT_UNCERTAINTY_MODE
+                product.source_fuv_detector_time_decoding != SOURCE_TIME_DECODING
+                or product.count_uncertainty_mode != COUNT_UNCERTAINTY_MODE
             ):
                 return "invalid"
             if proton_energy_model == "constant" and (
-                not np.isclose(nc.proton_energy_constant, proton_energy)
+                not np.isclose(product.proton_energy_constant, proton_energy)
                 or not np.isclose(
-                    nc.proton_energy_uncertainty_constant,
+                    product.proton_energy_uncertainty_constant,
                     proton_energy_uncertainty,
                 )
             ):
                 return "mismatch"
-
-            shape = (
-                len(nc.dimensions["time"]),
-                len(nc.dimensions["row"]),
-                len(nc.dimensions["column"]),
-            )
-            if any(length == 0 for length in shape):
-                return "invalid"
-            for name in FRAME_FIELDS:
-                if nc.variables[name].shape != shape:
-                    return "invalid"
-            for name in TIME_FIELDS:
-                if nc.variables[name].shape != (shape[0],):
-                    return "invalid"
-            if nc.variables["detector_row"].shape != (shape[1],):
-                return "invalid"
-            if nc.variables["detector_column"].shape != (shape[2],):
-                return "invalid"
     except (OSError, RuntimeError, KeyError, AttributeError, ValueError):
         return "invalid"
 

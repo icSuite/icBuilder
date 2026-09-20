@@ -162,7 +162,7 @@ def test_product2_rejects_schema1_product1(tmp_path):
     with Dataset(source, "r+") as nc:
         nc.schema_version = 1
 
-    with pytest.raises(ValueError, match="schema-2"):
+    with pytest.raises(ValueError, match="schema_version 1; expected 2"):
         PrecipitationDetector(source, kp_series=kp_series())
 
 
@@ -172,7 +172,7 @@ def test_product2_rejects_product1_from_old_time_decoder(tmp_path):
     with Dataset(source, "r+") as nc:
         nc.delncattr("source_time_decoding")
 
-    with pytest.raises(ValueError, match="supported schema-2"):
+    with pytest.raises(ValueError, match="missing attributes: source_time_decoding"):
         PrecipitationDetector(source, kp_series=kp_series())
 
 

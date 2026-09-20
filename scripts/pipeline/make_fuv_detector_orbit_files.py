@@ -11,13 +11,11 @@ from functools import partial
 from pathlib import Path
 
 import numpy as np
-from netCDF4 import Dataset
+from icreader import open_product
 from tqdm import tqdm
 from tqdm.contrib.concurrent import process_map
 
 from icbuilder.fuvdetector import (
-    COREGISTRATION_FLOAT_FIELDS,
-    COREGISTRATION_INTEGER_FIELDS,
     IMAGE_FIELDS,
     PREPROCESSING_LABEL,
     SCHEMA_VERSION,
@@ -28,29 +26,6 @@ from icbuilder.fuvdetector import (
 
 
 #%% Product validation and atomic publication
-
-REQUIRED_FRAME_FIELDS = (
-    "wic_counts", "si12_counts", "si13_counts",
-    "wic_variance", "si12_variance", "si13_variance",
-    "wic_quality_weight", "si12_quality_weight", "si13_quality_weight",
-    "wic_coverage", "si12_coverage", "si13_coverage",
-    "wic_valid", "si12_valid", "si13_valid",
-    "si12_source_count", "si13_source_count",
-    "glat", "glon", "mlat", "mlon", "mlt", "sza", "dza",
-)
-
-BASE_REQUIRED_TIME_FIELDS = (
-    "time", "wic_source_time", "si12_source_time", "si13_source_time",
-    "wic_source_index", "si12_source_index", "si13_source_index",
-    "wic_frame_quality", "si12_frame_quality", "si13_frame_quality",
-    "ssalon",
-)
-
-REQUIRED_TIME_FIELDS = BASE_REQUIRED_TIME_FIELDS + tuple(
-    f"{sensor}_coreg_{name}"
-    for sensor in ("si12", "si13")
-    for name in (*COREGISTRATION_INTEGER_FIELDS, *COREGISTRATION_FLOAT_FIELDS)
-)
 
 def validate_label(label):
     """Require the one preprocessing configuration implemented in this slice."""
@@ -131,42 +106,33 @@ def fuv_detector_file_status(
         return "missing"
 
     try:
-        with Dataset(filename) as nc:
+        with open_product(filename) as product:
             if (
-                nc.product_type != "fuv_detector"
-                or nc.representation != "detector"
-                or int(nc.schema_version) != SCHEMA_VERSION
+                product.product_type != "fuv_detector"
+                or product.representation != "detector"
+                or int(product.schema_version) != SCHEMA_VERSION
             ):
                 return "invalid"
             if (
-                nc.preprocessing_label != preprocessing_label
+                product.preprocessing_label != preprocessing_label
                 or not np.isclose(
-                    nc.time_match_tolerance_seconds, time_tolerance_seconds
+                    product.time_match_tolerance_seconds,
+                    time_tolerance_seconds,
                 )
             ):
                 return "mismatch"
-            if getattr(nc, "source_time_decoding", None) != SOURCE_TIME_DECODING:
+            if product.source_time_decoding != SOURCE_TIME_DECODING:
                 return "invalid"
 
             for sensor in ("wic", "si12", "si13"):
                 source = source_files[sensor]
                 expected_path = "" if source is None else str(source)
                 if (
-                    nc.getncattr(f"source_{sensor}") != expected_path
-                    or nc.getncattr(f"{sensor}_image_field")
+                    product.source_products[sensor] != expected_path
+                    or product.attrs[f"{sensor}_image_field"]
                     != IMAGE_FIELDS[sensor.upper()]
                 ):
                     return "mismatch"
-            shape = (
-                len(nc.dimensions["time"]),
-                len(nc.dimensions["row"]),
-                len(nc.dimensions["column"]),
-            )
-            if any(length == 0 for length in shape):
-                return "invalid"
-            for name in REQUIRED_FRAME_FIELDS:
-                if nc.variables[name].shape != shape:
-                    return "invalid"
             expected_units = {
                 "counts": "counts",
                 "variance": "counts^2",
@@ -175,22 +141,16 @@ def fuv_detector_file_status(
             }
             for sensor in ("wic", "si12", "si13"):
                 for field, units in expected_units.items():
-                    variable = nc.variables[f"{sensor}_{field}"]
-                    if getattr(variable, "units", None) != units:
+                    metadata = product.variable_attrs[f"{sensor}_{field}"]
+                    if metadata.get("units") != units:
                         return "invalid"
-                frame_quality = nc.variables[f"{sensor}_frame_quality"]
                 if (
-                    getattr(frame_quality, "flag_meanings", None)
+                    product.variable_attrs[f"{sensor}_frame_quality"].get(
+                        "flag_meanings"
+                    )
                     != "rejected usable science_ready"
                 ):
                     return "invalid"
-            for name in REQUIRED_TIME_FIELDS:
-                if nc.variables[name].shape != (shape[0],):
-                    return "invalid"
-            if nc.variables["detector_row"].shape != (shape[1],):
-                return "invalid"
-            if nc.variables["detector_column"].shape != (shape[2],):
-                return "invalid"
     except (OSError, RuntimeError, KeyError, AttributeError, ValueError):
         return "invalid"
 

@@ -10,9 +10,9 @@ import csv
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+from icreader import load as icload
 import numpy as np
 from scipy.ndimage import gaussian_filter
-import xarray as xr
 
 from icphysics.image import wic_to_s13
 
@@ -211,10 +211,10 @@ def save_example_maps(cases, times):
 def main():
     OUTPUT.mkdir(parents=True, exist_ok=True)
 
-    with xr.open_dataset(INPUT) as product:
-        wic = np.asarray(product.wic_corrected.values, dtype=float)
-        si13 = np.asarray(product.si13_corrected.values, dtype=float)
-        times = np.asarray(product.time.values)
+    product = icload(INPUT)
+    wic = np.asarray(product.wic_corrected, dtype=float)
+    si13 = np.asarray(product.si13_corrected, dtype=float)
+    times = np.asarray(product.time, dtype="datetime64[ns]")
 
     cases = calculate_cases(wic, si13)
     save_summary(cases)

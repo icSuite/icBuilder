@@ -3,7 +3,7 @@
 `icBuilder` is a tool for processing IMAGE WIC, SI12, and SI13 data to estimate ionospheric conductance with propagated uncertainties.
 
 > ⚠️ `icBuilder` is **not intended** for reading the estimated conductances.  
-> For that purpose, use the lightweight companion tool [`icReader`](https://github.com/BingMM/icReader).
+> For that purpose, use the lightweight companion tool [`icReader`](https://github.com/icSuite/icReader).
 
 ## Project Description
 
@@ -25,7 +25,8 @@ For repository-specific operating guidance and technical continuity, start with
 - `netCDF4` - for lookup and conductance-product serialization
 - `numba` - for compiled detector-footprint overlap calculations
 - [`tqdm`](https://github.com/tqdm/tqdm) – for progress bars (optional; can be removed with minor edits)
-- [`icReader`](https://github.com/BingMM/icReader) - for reading conductance output files (optional; used for creating conductance figures)
+- [`icReader`](https://github.com/icSuite/icReader) - required for reading
+  generated pipeline products and validating detector-first restart state
 
 ## Installation
 
@@ -33,6 +34,12 @@ mamba activate your_environment
 git clone https://github.com/BingMM/icBuilder.git  
 cd icBuilder  
 pip install -e .
+
+The project metadata installs icReader from its current `modular_pipeline`
+branch. For joint development, clone `icReader` beside this repository and
+install it editable before installing icBuilder. The detector-first pipeline
+requires the reader interface that includes lazy detector fields, verified CS
+grid reconstruction, and read-only variable metadata.
 
 ## Step-by-Step Guide
 

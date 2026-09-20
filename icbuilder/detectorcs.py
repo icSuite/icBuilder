@@ -3,7 +3,8 @@
 #%% Imports
 
 import numpy as np
-from netCDF4 import Dataset
+from icreader import open_product
+from netCDF4 import date2num
 
 from .footprints import overlap_mapping
 
@@ -144,19 +145,17 @@ def reduce_support(valid, mapping, cell_area, output_shape):
 
 #%% Shared product I/O
 
-def read_variable(variable, index=None, dtype=float):
-    """Read a NetCDF variable as an ordinary ndarray."""
+def encode_time(values, units, calendar):
+    """Encode decoded reader times while retaining missing source frames."""
 
-    values = variable[:] if index is None else variable[index]
-    if np.ma.isMaskedArray(values):
-        if np.issubdtype(np.dtype(dtype), np.integer):
-            fill_value = -1
-        elif np.issubdtype(np.dtype(dtype), np.bool_):
-            fill_value = False
-        else:
-            fill_value = np.nan
-        values = values.filled(fill_value)
-    return np.asarray(values, dtype=dtype)
+    values = np.asarray(values, dtype=object)
+    encoded = np.full(values.shape, np.nan)
+    valid = np.asarray([value is not None for value in values], dtype=bool)
+    if np.any(valid):
+        encoded[valid] = date2num(
+            values[valid].tolist(), units, calendar=calendar
+        )
+    return encoded
 
 
 def read_common_time_fields(source):
@@ -164,14 +163,16 @@ def read_common_time_fields(source):
 
     result = {}
     for name in TIME_FIELDS:
-        variable = source.variables[name]
-        result[name] = read_variable(variable)
-        result[f"{name}_units"] = variable.units
-        result[f"{name}_calendar"] = getattr(variable, "calendar", "standard")
+        encoding = source.time_encoding[name]
+        result[name] = encode_time(
+            getattr(source, name), encoding["units"], encoding["calendar"]
+        )
+        result[f"{name}_units"] = encoding["units"]
+        result[f"{name}_calendar"] = encoding["calendar"]
     for name in INDEX_FIELDS + FRAME_QUALITY_FIELDS:
-        result[name] = read_variable(source.variables[name], dtype=int)
+        result[name] = np.asarray(getattr(source, name), dtype=int).copy()
     for name in TIME_VALUE_FIELDS:
-        result[name] = read_variable(source.variables[name])
+        result[name] = np.asarray(getattr(source, name), dtype=float).copy()
     return result
 
 
@@ -246,17 +247,7 @@ def write_common_cs_coordinates(nc, product):
 def validate_detector_pair(precipitation, conductance, precipitation_identity):
     """Require Product 2 and Product 3 to describe the same detector orbit."""
 
-    precipitation_shape = (
-        len(precipitation.dimensions["time"]),
-        len(precipitation.dimensions["row"]),
-        len(precipitation.dimensions["column"]),
-    )
-    conductance_shape = (
-        len(conductance.dimensions["time"]),
-        len(conductance.dimensions["row"]),
-        len(conductance.dimensions["column"]),
-    )
-    if precipitation_shape != conductance_shape:
+    if precipitation.shape != conductance.shape:
         raise ValueError("detector Product 2 and Product 3 shapes do not match")
     if (
         conductance.source_precipitation_detector_sha256
@@ -265,10 +256,16 @@ def validate_detector_pair(precipitation, conductance, precipitation_identity):
         raise ValueError("Product 3 does not identify the selected Product 2")
 
     for name in TIME_FIELDS:
-        first = read_variable(precipitation.variables[name])
-        second = read_variable(conductance.variables[name])
-        if not np.array_equal(first, second, equal_nan=True):
+        first = np.asarray(getattr(precipitation, name), dtype=object)
+        second = np.asarray(getattr(conductance, name), dtype=object)
+        if not np.array_equal(first, second):
             raise ValueError(f"detector Product 2 and Product 3 {name} differ")
+        if dict(precipitation.time_encoding[name]) != dict(
+            conductance.time_encoding[name]
+        ):
+            raise ValueError(
+                f"detector Product 2 and Product 3 {name} encodings differ"
+            )
 
 
 def build_detector_cs_products(
@@ -284,35 +281,42 @@ def build_detector_cs_products(
     from .precipitationcs import PrecipitationCS
 
     grid = make_detector_cs_grid()
-    precipitation_product = PrecipitationCS(
-        precipitation_filename,
-        grid=grid,
-        software_version=software_version,
-    )
-    conductance_product = ConductanceCS(
-        conductance_filename,
-        grid=grid,
-        software_version=software_version,
-    )
-
-    with Dataset(precipitation_filename) as precipitation, Dataset(
+    with open_product(precipitation_filename) as precipitation, open_product(
         conductance_filename
     ) as conductance:
+        precipitation_product = PrecipitationCS(
+            precipitation,
+            grid=grid,
+            software_version=software_version,
+        )
+        conductance_product = ConductanceCS(
+            conductance,
+            grid=grid,
+            software_version=software_version,
+        )
         validate_detector_pair(
             precipitation,
             conductance,
             precipitation_product.source_identity,
         )
-        precipitation_mlat = read_variable(precipitation.variables["mlat"])
-        conductance_mlat = read_variable(conductance.variables["mlat"])
+        precipitation_mlat = np.asarray(
+            precipitation.read("mlat"), dtype=float
+        )
+        conductance_mlat = np.asarray(
+            conductance.read("mlat"), dtype=float
+        )
         if not np.array_equal(
             precipitation_mlat, conductance_mlat, equal_nan=True
         ):
             raise ValueError("detector Product 2 and Product 3 MLAT differ")
         del conductance_mlat
 
-        precipitation_mlt = read_variable(precipitation.variables["mlt"])
-        conductance_mlt = read_variable(conductance.variables["mlt"])
+        precipitation_mlt = np.asarray(
+            precipitation.read("mlt"), dtype=float
+        )
+        conductance_mlt = np.asarray(
+            conductance.read("mlt"), dtype=float
+        )
         if not np.array_equal(
             precipitation_mlt, conductance_mlt, equal_nan=True
         ):

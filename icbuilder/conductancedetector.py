@@ -5,8 +5,9 @@
 from pathlib import Path
 
 import numpy as np
+from icreader import open_product
 from icphysics import robinson_conductance
-from netCDF4 import Dataset, date2num, num2date
+from netCDF4 import Dataset, date2num
 
 from .fuvdetector import SOURCE_TIME_DECODING, source_identity
 from .precipitationdetector import (
@@ -45,48 +46,19 @@ PRECIPITATION_FIELDS = (
 
 #%% Product-2 loading
 
-def _as_array(variable, dtype=float):
-    values = variable[:]
-    if np.ma.isMaskedArray(values):
-        if np.issubdtype(np.dtype(dtype), np.integer):
-            fill_value = -1
-        elif np.issubdtype(np.dtype(dtype), np.bool_):
-            fill_value = False
-        else:
-            fill_value = np.nan
-        values = values.filled(fill_value)
-    return np.asarray(values, dtype=dtype)
-
-
-def _read_time(nc, name):
-    variable = nc.variables[name]
-    encoded = variable[:]
-    missing = np.ma.getmaskarray(encoded)
-    decoded = np.full(encoded.shape, None, dtype=object)
-    if np.any(~missing):
-        decoded[~missing] = num2date(
-            np.asarray(encoded)[~missing],
-            variable.units,
-            variable.calendar,
-            only_use_cftime_datetimes=False,
-        )
-    return decoded
-
 
 def load_precipitation_detector(filename):
     """Load the Product-2 state needed by detector conductance."""
 
     filename = Path(filename)
-    with Dataset(filename) as nc:
+    with open_product(filename) as source:
         if (
-            nc.product_type != "precipitation_detector"
-            or nc.representation != "detector"
-            or int(nc.schema_version) != PRECIPITATION_SCHEMA_VERSION
-            or nc.method != PRECIPITATION_METHOD
-            or getattr(nc, "count_uncertainty_mode", None)
-            != COUNT_UNCERTAINTY_MODE
-            or getattr(nc, "source_fuv_detector_time_decoding", None)
-            != SOURCE_TIME_DECODING
+            source.product_type != "precipitation_detector"
+            or source.representation != "detector"
+            or int(source.schema_version) != PRECIPITATION_SCHEMA_VERSION
+            or source.method != PRECIPITATION_METHOD
+            or source.count_uncertainty_mode != COUNT_UNCERTAINTY_MODE
+            or source.source_fuv_detector_time_decoding != SOURCE_TIME_DECODING
         ):
             raise ValueError(
                 f"{filename} is not a supported schema-"
@@ -94,90 +66,70 @@ def load_precipitation_detector(filename):
                 "precipitation_detector product"
             )
 
-        shape = (
-            len(nc.dimensions["time"]),
-            len(nc.dimensions["row"]),
-            len(nc.dimensions["column"]),
-        )
-        if any(length == 0 for length in shape):
-            raise ValueError("precipitation_detector dimensions must be non-empty")
-        if nc.variables["detector_row"].shape != (shape[1],):
-            raise ValueError(f"detector_row must have shape {(shape[1],)}")
-        if nc.variables["detector_column"].shape != (shape[2],):
-            raise ValueError(
-                f"detector_column must have shape {(shape[2],)}"
-            )
+        shape = source.shape
         product = {
             "source_file": str(filename),
-            "schema_version": int(nc.schema_version),
-            "method": nc.method,
-            "proton_flux_source": nc.proton_flux_source,
-            "proton_energy_model": nc.proton_energy_model,
+            "schema_version": int(source.schema_version),
+            "method": source.method,
+            "proton_flux_source": source.proton_flux_source,
+            "proton_energy_model": source.proton_energy_model,
             "proton_energy_uncertainty_method": (
-                nc.proton_energy_uncertainty_method
+                source.proton_energy_uncertainty_method
             ),
-            "proton_energy_coordinate_note": nc.proton_energy_coordinate_note,
+            "proton_energy_coordinate_note": (
+                source.proton_energy_coordinate_note
+            ),
             "proton_response_energy_min": float(
-                nc.proton_response_energy_min
+                source.proton_response_energy_min
             ),
             "proton_response_energy_max": float(
-                nc.proton_response_energy_max
+                source.proton_response_energy_max
             ),
-            "proton_operation_order": nc.proton_operation_order,
-            "count_uncertainty_mode": nc.count_uncertainty_mode,
-            "count_uncertainty_method": nc.count_uncertainty_method,
-            "coordinate_system": nc.coordinate_system,
-            "reference_height_km": float(nc.reference_height_km),
-            "source_software_version": nc.software_version,
-            "source_fuv_detector": nc.source_fuv_detector,
-            "source_fuv_detector_sha256": nc.source_fuv_detector_sha256,
-            "source_preprocessing_label": nc.source_preprocessing_label,
+            "proton_operation_order": source.proton_operation_order,
+            "count_uncertainty_mode": source.count_uncertainty_mode,
+            "count_uncertainty_method": source.count_uncertainty_method,
+            "coordinate_system": source.coordinate_system,
+            "reference_height_km": float(source.reference_height_km),
+            "source_software_version": source.software_version,
+            "source_fuv_detector": source.source_fuv_detector,
+            "source_fuv_detector_sha256": source.source_fuv_detector_sha256,
+            "source_preprocessing_label": source.source_preprocessing_label,
             "source_fuv_detector_time_decoding": (
-                nc.source_fuv_detector_time_decoding
+                source.source_fuv_detector_time_decoding
             ),
             "shape": shape,
-            "detector_row": _as_array(nc.variables["detector_row"], int),
-            "detector_column": _as_array(
-                nc.variables["detector_column"], int
-            ),
-            "kp_provenance": {
-                name[3:]: nc.getncattr(name)
-                for name in nc.ncattrs()
-                if name.startswith("kp_")
-            },
+            "detector_row": np.asarray(source.detector_row, dtype=int).copy(),
+            "detector_column": np.asarray(
+                source.detector_column, dtype=int
+            ).copy(),
+            "kp_provenance": dict(source.kp_provenance),
         }
         if product["proton_energy_model"] == "constant":
-            product["proton_energy_constant"] = float(
-                nc.proton_energy_constant
-            )
+            product["proton_energy_constant"] = float(source.proton_energy_constant)
             product["proton_energy_uncertainty_constant"] = float(
-                nc.proton_energy_uncertainty_constant
+                source.proton_energy_uncertainty_constant
             )
 
         for name in TIME_FIELDS:
-            if nc.variables[name].shape != (shape[0],):
-                raise ValueError(f"{name} must have shape {(shape[0],)}")
-            product[name] = _read_time(nc, name)
+            product[name] = np.asarray(
+                getattr(source, name), dtype=object
+            ).copy()
 
         for name in TIME_VALUE_FIELDS:
-            if nc.variables[name].shape != (shape[0],):
-                raise ValueError(f"{name} must have shape {(shape[0],)}")
             dtype = int if name.endswith("_index") or name.endswith(
                 "_frame_quality"
             ) else float
-            product[name] = _as_array(nc.variables[name], dtype)
+            product[name] = np.asarray(
+                getattr(source, name), dtype=dtype
+            ).copy()
 
         for name in GEOMETRY_FIELDS + PRECIPITATION_FIELDS + (
             "method_quality_weight",
         ):
-            if nc.variables[name].shape != shape:
-                raise ValueError(f"{name} must have shape {shape}")
-            product[name] = _as_array(nc.variables[name])
+            product[name] = np.asarray(source.read(name), dtype=float)
 
         for name in ("method_valid", "Ep_clipping_flag"):
-            if nc.variables[name].shape != shape:
-                raise ValueError(f"{name} must have shape {shape}")
-            product[name] = _as_array(nc.variables[name], bool)
+            product[name] = np.asarray(source.read(name), dtype=bool)
 
     product.update(source_identity(filename))
     return product

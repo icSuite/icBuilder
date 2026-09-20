@@ -1,5 +1,6 @@
 """Integration tests for paired detector-to-CS post-processing."""
 
+from collections import Counter
 from datetime import datetime, timedelta
 import importlib.util
 from pathlib import Path
@@ -8,6 +9,7 @@ import sys
 
 import numpy as np
 import pytest
+from icreader.product import NetCDFProduct
 from icphysics import robinson_conductance
 from netCDF4 import Dataset
 
@@ -180,6 +182,30 @@ def test_paired_products_share_mapping_and_round_trip(tmp_path, monkeypatch):
         assert nc.variables["P"].shape == (2, 46, 46)
         assert "not recalculated" in nc.nonlinear_ordering
         assert nc.groups["grid"].variables["mlat"].shape == (46, 46)
+
+
+def test_paired_reduction_reads_each_detector_cube_once(tmp_path, monkeypatch):
+    precipitation_source, conductance_source = write_detector_pair(
+        tmp_path / "input"
+    )
+    reads = Counter()
+    original_read = NetCDFProduct.read
+
+    def counted_read(product, name, index=None):
+        if index is not None:
+            raise AssertionError("CS reduction must not decompress frame by frame")
+        reads[(product.product_type, name)] += 1
+        return original_read(product, name, index)
+
+    monkeypatch.setattr(NetCDFProduct, "read", counted_read)
+    build_detector_cs_products(
+        precipitation_source,
+        conductance_source,
+        software_version="cs-test",
+    )
+
+    assert reads
+    assert max(reads.values()) == 1
 
 
 def test_combined_orbit_runner_writes_and_restarts(tmp_path, monkeypatch):

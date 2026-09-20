@@ -1,16 +1,86 @@
 # Processing Pipeline
 
-Last reviewed: 2026-09-18
+Last reviewed: 2026-09-20
 
 > [!NOTE]
-> This note describes the live, bin-first `modular_pipeline` implementation.
-> The accepted target design is detector-first and is documented in
-> [[Detector-First Product Architecture]]. Do not infer the future product
-> order from the implementation described below.
+> This note describes the live bin-first production path and the implemented
+> detector-first Product-1/Product-2 experimental slice. The accepted target
+> design is documented in [[Detector-First Product Architecture]].
 
 This note records the durable high-level workflow visible in the README and
 live code. It is orientation, not a claim that the full production dataset was
 reproduced during the review.
+
+## Detector-first experimental workflow
+
+All reads of generated detector-first and CS products cross the public
+icReader boundary. icReader validates the serialized contract, decodes CF
+times and fill values, lazily exposes detector cubes, and reconstructs the CS
+grid. icBuilder retains the scientific calculations, workflow-specific source
+and configuration checks, and every writer. Complete-orbit calculations
+materialize each required field once inside the reader context; restart checks
+inspect structure and metadata without decompressing the detector cubes.
+
+The new-fuvpy sensor orbits feed
+`scripts/pipeline/make_fuv_detector_orbit_files.py`. Schema-2 Product 1 keeps
+every WIC frame, matches SI12 and SI13 independently within two seconds, maps
+SI footprints onto WIC pixels, copies WIC detector variance, and propagates SI
+variance with squared overlap weights. It writes beneath
+`fuv_detector/fuvpy_bs_directional_v1` using atomic partial-file publication.
+
+`scripts/pipeline/make_precipitation_detector_orbit_files.py` then consumes
+that schema directly. The implemented image-ratio parity branch uses the
+square roots of Product-1 variances as count uncertainties, preserves source
+frame quality and support, and writes schema-3 `precipitation_detector` files.
+The runner defaults to Hardy proton energy and the fixed image-ratio method.
+It accepts separate `--base-input` and `--base-output` roots, with the output
+defaulting to the input, and processes independent orbits concurrently when
+`--workers` is greater than one.
+Product 2 explicitly selects the icPhysics `measurement` uncertainty mode
+because Product 1 already stores Poisson/compound-Poisson detector variance.
+No second image-signal variance is added. Schema 3 records this contract and
+invalidates the earlier duplicate-noise outputs. Induced target covariance and
+background-model uncertainty are not represented.
+This branch is implemented and tested. A complete 187-frame Product-1 orbit
+has run in 65.46 seconds with 3.57-GB peak RSS after filtering unavailable SI
+coordinates before inverse WIC interpolation. The full-corpus scientific gate
+remains pending. The user confirmed that the Product-1 runner subsequently
+completed successfully on the UiB `dynamit` server; aggregate product counts
+and validation statistics were not yet recorded locally.
+
+`scripts/pipeline/make_conductance_detector_orbit_files.py` consumes one
+retrieval directory beneath `precipitation_detector` and writes
+`conductance_detector/<retrieval_label>/robinson`. The schema-2 detector
+product applies `icphysics.robinson_conductance()` directly to Product-2 E0,
+Fe, uncertainty, and covariance without spatial binning or recalculating
+precipitation. It preserves the per-frame WIC geometry, precipitation/proton
+state, method quality, and source identity. `conductance_valid` describes
+finite central Hall/Pedersen values; `conductance_uncertainty_valid` is
+separate so unavailable analytic uncertainty does not remove a valid central
+estimate. The runner supports separate input/output bases, atomic restart, and
+orbit-level `--workers` parallelism. Cubed-Sphere conductance remains a later
+product derived by binning this detector conductance.
+The schema bump invalidates conductance generated from pre-fix Product 2;
+regenerate it after the corrected Product 2. Central P/H remain unchanged.
+
+`scripts/pipeline/make_detector_cs_orbit_files.py` is the shared post-processing
+stage for completed detector Products 2 and 3. It freezes the first analysis
+grid at 46 by 46 under `image_apex_130km_46x46_v1`, builds one WIC-footprint
+mapping per frame, and reuses it to write independent `precipitation_cs` and
+`conductance_cs` files. Conductance is averaged from detector P/H and is never
+recalculated from binned E0/Fe. Measurement variance and E0--Fe covariance use
+squared normalized overlap weights; spatial coverage, contributing footprints,
+quality, clipping fraction, and uncertainty validity remain separate fields.
+The runner supports separate bases, atomic restart, and orbit-level workers.
+
+The reducer reads each compressed detector variable once per orbit after
+building the frame mappings; the rejected frame-wise reader produced identical
+science but was about 29 times slower on orbit 0086. Corrected orbits 0085,
+0086, 0261, and 0968 completed both 46-by-46 products in 39.60 seconds with two
+workers and 1,614,780-KB reported peak RSS. All 1,477,851 central-valid cells
+retain propagated uncertainty, and restart skips all four in 0.33 seconds. The
+legacy 36-by-36 Zhang--Paxton lookup is not used by this stage and remains
+deferred.
 
 ## Modular Product-1 binning
 
@@ -50,7 +120,8 @@ incompatible files. Common WIC/SI resolution matching is not part of Product
    availability arrays. The corrected image and quality weight are `dgimg`
    and `dgweight`; the removed SH fields are not produced. `--base_input`
    identifies the orbit-index and raw-data tree. `--base_output` identifies the
-   product tree and defaults to the input base when omitted.
+   product tree and defaults to the input base when omitted. With neither path
+   supplied, both resolve to `<repository>/example_data`.
 
 3. **Optional inspection and grid choice**
    Background-removal plotting and grid-resolution scripts support inspection.

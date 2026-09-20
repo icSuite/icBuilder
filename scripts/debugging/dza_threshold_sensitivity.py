@@ -10,9 +10,9 @@ import argparse
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+from icreader import load as icload
 import numpy as np
 import pandas as pd
-from netCDF4 import Dataset
 from tqdm import tqdm
 
 
@@ -41,32 +41,32 @@ def orbit_files(folder):
     }
 
 
-def read_array(nc, name):
-    return np.asarray(nc.variables[name][:], dtype=float)
-
-
 def read_precipitation(filename, binned_wic_file, method):
     """Read the fields needed for this diagnostic and attach WIC DZA."""
 
-    with Dataset(filename) as nc:
-        data = {
-            "time": read_array(nc, "time"),
-            "wic_source_index": np.asarray(nc.variables["wic_source_index"][:], dtype=int),
-            "E0": read_array(nc, "E0"),
-            "Fe": read_array(nc, "Fe"),
-        }
-        if method == "image_ratio":
-            data["wic"] = read_array(nc, "wic_corrected")
-            data["si13"] = read_array(nc, "si13_corrected")
-            data["R"] = read_array(nc, "R")
-        else:
-            shape = data["E0"].shape
-            data["wic"] = np.full(shape, np.nan)
-            data["si13"] = np.full(shape, np.nan)
-            data["R"] = np.full(shape, np.nan)
+    precipitation = icload(filename)
+    data = {
+        "time": np.asarray(precipitation.time, dtype=object),
+        "wic_source_index": np.asarray(
+            precipitation.wic_source_index, dtype=int
+        ),
+        "E0": np.asarray(precipitation.E0, dtype=float),
+        "Fe": np.asarray(precipitation.Fe, dtype=float),
+    }
+    if method == "image_ratio":
+        data["wic"] = np.asarray(precipitation.wic_corrected, dtype=float)
+        data["si13"] = np.asarray(
+            precipitation.si13_corrected, dtype=float
+        )
+        data["R"] = np.asarray(precipitation.R, dtype=float)
+    else:
+        shape = data["E0"].shape
+        data["wic"] = np.full(shape, np.nan)
+        data["si13"] = np.full(shape, np.nan)
+        data["R"] = np.full(shape, np.nan)
 
-    with Dataset(binned_wic_file) as nc:
-        source_dza = read_array(nc, "dza")
+    binned_wic = icload(binned_wic_file)
+    source_dza = np.asarray(binned_wic.dza, dtype=float)
 
     data["dza"] = source_dza[data["wic_source_index"]]
     return data

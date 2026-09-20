@@ -7,9 +7,8 @@ from pathlib import Path
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
-from netCDF4 import Dataset, num2date
+from icreader import load as icload
 import numpy as np
-from secsy import CSprojection
 import xarray as xr
 
 from icphysics.image import wic_to_s13
@@ -20,28 +19,18 @@ from icphysics.image import wic_to_s13
 def read_image(filename):
     """Read the image-ratio precipitation product and its stored grid."""
 
-    with Dataset(filename) as data:
-        if data.getncattr("method") != "image_ratio":
-            raise ValueError("The IMAGE file must use method='image_ratio'")
+    data = icload(filename)
+    if data.method != "image_ratio":
+        raise ValueError("The IMAGE file must use method='image_ratio'")
 
-        time_variable = data.variables["time"]
-        times = num2date(
-            time_variable[:],
-            time_variable.units,
-            only_use_cftime_datetimes=False,
-        )
-
-        grid = data.groups["grid"]
-        image = {
-            "time": np.asarray(times, dtype="datetime64[ns]"),
-            "ratio": np.asarray(data.variables["R"][:], dtype=float),
-            "energy": np.asarray(data.variables["E0"][:], dtype=float),
-            "xi": np.asarray(grid.variables["xi"][:], dtype=float),
-            "eta": np.asarray(grid.variables["eta"][:], dtype=float),
-            "projection": CSprojection(grid.position, grid.orientation),
-        }
-
-    return image
+    return {
+        "time": np.asarray(data.time, dtype="datetime64[ns]"),
+        "ratio": np.asarray(data.R, dtype=float),
+        "energy": np.asarray(data.E0, dtype=float),
+        "xi": np.asarray(data.grid.xi, dtype=float),
+        "eta": np.asarray(data.grid.eta, dtype=float),
+        "projection": data.grid.projection,
+    }
 
 
 def read_dmsp(filename):

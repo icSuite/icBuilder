@@ -9,65 +9,33 @@ from functools import partial
 from pathlib import Path
 
 import numpy as np
-from netCDF4 import Dataset
+from icreader import open_product
 from tqdm import tqdm
 from tqdm.contrib.concurrent import process_map
 
-from icbuilder.conductancecs import (
-    RESULT_FIELDS as CONDUCTANCE_RESULT_FIELDS,
-    SCHEMA_VERSION as CONDUCTANCE_CS_SCHEMA_VERSION,
-)
 from icbuilder.detectorcs import (
     BINNING_METHOD,
-    FRAME_QUALITY_FIELDS,
-    INDEX_FIELDS,
-    TIME_FIELDS,
-    TIME_VALUE_FIELDS,
     build_detector_cs_products,
 )
 from icbuilder.grids import (
     DETECTOR_CS_COORDINATE_SHA256,
     DETECTOR_CS_GRID_ID,
 )
-from icbuilder.precipitationcs import (
-    RESULT_FIELDS as PRECIPITATION_RESULT_FIELDS,
-    SCHEMA_VERSION as PRECIPITATION_CS_SCHEMA_VERSION,
-)
+from icbuilder.precipitationcs import SCHEMA_VERSION as PRECIPITATION_CS_SCHEMA_VERSION
+from icbuilder.conductancecs import SCHEMA_VERSION as CONDUCTANCE_CS_SCHEMA_VERSION
 
 
 #%% Restart validation and atomic publication
 
-def _common_cs_status(nc, product_type, schema_version, result_fields):
+def _common_cs_status(product, product_type, schema_version):
     if (
-        nc.product_type != product_type
-        or nc.representation != "cs"
-        or int(nc.schema_version) != schema_version
-        or nc.grid_id != DETECTOR_CS_GRID_ID
-        or nc.grid_coordinate_sha256 != DETECTOR_CS_COORDINATE_SHA256
-        or nc.binning_method != BINNING_METHOD
+        product.product_type != product_type
+        or product.representation != "cs"
+        or int(product.schema_version) != schema_version
+        or product.grid_id != DETECTOR_CS_GRID_ID
+        or product.grid_coordinate_sha256 != DETECTOR_CS_COORDINATE_SHA256
+        or product.binning_method != BINNING_METHOD
     ):
-        return "invalid"
-
-    shape = (
-        len(nc.dimensions["time"]),
-        len(nc.dimensions["dim1"]),
-        len(nc.dimensions["dim2"]),
-    )
-    if shape[0] == 0 or shape[1:] != (46, 46):
-        return "invalid"
-    for name in result_fields:
-        if nc.variables[name].shape != shape:
-            return "invalid"
-    for name in TIME_FIELDS + INDEX_FIELDS + FRAME_QUALITY_FIELDS + TIME_VALUE_FIELDS:
-        if nc.variables[name].shape != (shape[0],):
-            return "invalid"
-    grid = nc.groups["grid"]
-    for name in ("xi", "eta", "mlat", "mlt"):
-        if grid.variables[name].shape != shape[1:]:
-            return "invalid"
-    if grid.variables["xi_edge"].shape != (shape[2] + 1,):
-        return "invalid"
-    if grid.variables["eta_edge"].shape != (shape[1] + 1,):
         return "invalid"
     return "complete"
 
@@ -84,20 +52,24 @@ def precipitation_cs_file_status(filename, source_precipitation):
 
     try:
         source_stat = source_precipitation.stat()
-        with Dataset(filename) as nc:
+        with open_product(filename) as product:
             status = _common_cs_status(
-                nc,
+                product,
                 "precipitation_cs",
                 PRECIPITATION_CS_SCHEMA_VERSION,
-                PRECIPITATION_RESULT_FIELDS,
             )
             if status != "complete":
                 return status
             if (
-                nc.source_precipitation_detector != str(source_precipitation)
-                or int(nc.source_precipitation_detector_size_bytes)
+                product.source_precipitation_detector
+                != str(source_precipitation)
+                or int(
+                    product.attrs["source_precipitation_detector_size_bytes"]
+                )
                 != source_stat.st_size
-                or int(nc.source_precipitation_detector_mtime_ns)
+                or int(
+                    product.attrs["source_precipitation_detector_mtime_ns"]
+                )
                 != source_stat.st_mtime_ns
             ):
                 return "mismatch"
@@ -123,22 +95,21 @@ def conductance_cs_file_status(
 
     try:
         source_stat = source_conductance.stat()
-        with Dataset(filename) as nc:
+        with open_product(filename) as product:
             status = _common_cs_status(
-                nc,
+                product,
                 "conductance_cs",
                 CONDUCTANCE_CS_SCHEMA_VERSION,
-                CONDUCTANCE_RESULT_FIELDS,
             )
             if status != "complete":
                 return status
             if (
-                nc.source_conductance_detector != str(source_conductance)
-                or int(nc.source_conductance_detector_size_bytes)
+                product.source_conductance_detector != str(source_conductance)
+                or int(product.attrs["source_conductance_detector_size_bytes"])
                 != source_stat.st_size
-                or int(nc.source_conductance_detector_mtime_ns)
+                or int(product.attrs["source_conductance_detector_mtime_ns"])
                 != source_stat.st_mtime_ns
-                or nc.companion_precipitation_cs
+                or product.companion_precipitation_cs
                 != str(companion_precipitation_cs)
             ):
                 return "mismatch"

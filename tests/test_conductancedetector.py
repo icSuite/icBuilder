@@ -111,6 +111,18 @@ def write_precipitation_detector(path, proton_energy_model="hardy"):
             "dEp": 0.0,
             "Fp": 0.8,
             "dFp": 0.1,
+            "wic_quality_weight": 0.8,
+            "si12_quality_weight": 0.8,
+            "si13_quality_weight": 0.8,
+            "wic_coverage": 1.0,
+            "si12_coverage": 1.0,
+            "si13_coverage": 1.0,
+            "wic_corrected": 10.0,
+            "dwic_corrected": 1.0,
+            "si13_corrected": 5.0,
+            "dsi13_corrected": 1.0,
+            "R": 2.0,
+            "dR": 0.2,
         }
         for name, value in geometry.items():
             nc.createVariable(name, "f4", dimensions)[:] = np.full(
@@ -130,6 +142,14 @@ def write_precipitation_detector(path, proton_energy_model="hardy"):
         nc.createVariable("method_valid", "i1", dimensions)[:] = (
             method_valid.astype(np.int8)
         )
+        for name in ("wic_valid", "si12_valid", "si13_valid"):
+            nc.createVariable(name, "i1", dimensions)[:] = np.ones(
+                shape, dtype=np.int8
+            )
+        for name in ("si12_source_count", "si13_source_count"):
+            nc.createVariable(name, "i4", dimensions)[:] = np.ones(
+                shape, dtype=np.int32
+            )
         nc.createVariable("Ep_clipping_flag", "i1", dimensions)[:] = (
             np.zeros(shape, dtype=np.int8)
         )
@@ -226,7 +246,10 @@ def test_detector_conductance_rejects_wrong_product2_schema(tmp_path):
 
     with pytest.raises(
         ValueError,
-        match=f"supported schema-{PRECIPITATION_SCHEMA_VERSION}",
+        match=(
+            "schema_version 1; expected "
+            f"{PRECIPITATION_SCHEMA_VERSION}"
+        ),
     ):
         ConductanceDetector(source)
 

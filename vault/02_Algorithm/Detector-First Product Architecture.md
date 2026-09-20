@@ -1,17 +1,17 @@
 # Detector-First Product Architecture
 
-Last reviewed: 2026-09-18
+Last reviewed: 2026-09-20
 
-Status: The detector-first direction is accepted. Choices labelled proposed
-or open below still require a decision or a focused test. This document
-describes the intended architecture. Experimental `current_fuvpy_v1`
-`fuv_detector` and image-ratio `precipitation_detector` slices now implement
-the first two detector-space boundaries. Product 3 and the candidate
-Zhang--Paxton Product 2 still use the current bin-first `modular_pipeline`
-path. The raw-orbit runner now produces the selected BS-only
-`dgimg`/`dgweight` contract from the new fuvpy API, but the experimental
-`fuv_detector` loader still expects the older WIC `shimg`/`shweight` boundary
-and must be migrated before those slices are end-to-end compatible.
+Status: The detector-first direction is accepted. Detector Product 1,
+image-ratio Product 2, and Robinson Product 3 are implemented on the selected
+new-fuvpy source contract. Their fixed-grid post-processing stage is approved
+for implementation on an explicitly frozen 46-by-46 grid. Choices labelled
+proposed or open below still require a decision or focused test. The candidate
+Zhang--Paxton retrieval remains tied to legacy bin-first/36-by-36
+infrastructure and is deferred for later redesign rather than treated as a
+blocker for the image-ratio/Robinson CS products. See
+[[New fuvpy Detector Product Implementation Plan]] and
+[[Detector CS Post-processing Implementation Plan]].
 
 ## Purpose
 
@@ -40,6 +40,21 @@ Storage is not a design constraint. Prefer scientifically clear,
 independently inspectable products over avoiding repeated coordinates or
 fields.
 
+## Reader and writer boundary
+
+icBuilder owns native sensor ingestion, scientific calculations, source
+identity, and NetCDF serialization. Generated detector and CS products are
+read through icReader's public context-managed interface. icReader owns their
+schema and dimension validation, fill conversion, CF-time decoding, lazy
+three-dimensional fields, immutable serialized metadata, and exact CS-grid
+reconstruction. Consumers must not reach through a reader to its private
+NetCDF handle.
+
+The calculation stages that need a complete orbit materialize each required
+field once before closing the reader. Metadata-only restart checks do not
+decompress those cubes. Raw NetCDF remains appropriate for native fuvpy files,
+external products, lookup data, writers, and serialization-level tests.
+
 ## Decision boundary
 
 | Settled direction | Still open |
@@ -47,11 +62,14 @@ fields.
 | Coregister SI12/SI13 to WIC detector geometry | Publication background and camera-preprocessing branch |
 | Calculate Products 1--3 before CS binning | Exact sensor time-match and frame-validity rules |
 | Derive Product 2 CS and Product 3 CS independently | Detector radiometry, uncertainty, and induced correlation |
-| Use one fixed CS grid for analysis products | CS extent/resolution and field-specific reducers |
+| Use one explicitly frozen 46-by-46 CS grid for the first analysis products | Final field inventory and later coverage-threshold policy |
 | Keep physical equations in icPhysics | Grid-independent Zhang--Paxton lookup and coordinate conventions |
 
 The left column defines the architecture. The right column defines the tests
-and decisions needed before implementation or publication.
+and decisions needed before implementation or publication. The common
+post-processing implementation and its verification gates are specified in
+[[Detector CS Post-processing Implementation Plan]]. The legacy 36-by-36
+Zhang--Paxton lookup is deferred and does not define this grid.
 
 ## Terminology
 
@@ -145,13 +163,14 @@ stable observational boundary between camera preprocessing and replaceable
 precipitation models. It contains WIC, SI12, and SI13 on the same WIC detector
 pixels without applying a proton-energy or electron-energy model.
 
-Current fuvpy, fixed FUVVIEW, active `p`, and active `p2` background branches
-produce materially different ratios. None of the historical alternatives has
-yet justified replacing current fuvpy. Each retained preprocessing experiment
-must therefore have a separate Product-1 label; no branch is silently the
-universal canonical observation.
+The implemented Product-1 ingestion target is the new fuvpy BS-directional
+model on `background_model_asymmetry`, labelled
+`fuvpy_bs_directional_v1`. Fixed FUVVIEW, active `p`, active `p2`, and legacy
+Ohma fuvpy remain comparison sources rather than live Product-1 ingestion
+branches. A scientifically selected alternative would require a separate,
+explicit Product-1 contract.
 
-### Proposed frame support
+### Implemented frame support
 
 WIC defines the Product-1 time axis. SI12 and SI13 are matched independently
 to each WIC frame within a documented tolerance.
@@ -165,11 +184,11 @@ This keeps Zhang--Paxton frames from being lost merely because SI13 is absent,
 while retaining SI13 wherever it exists for the image-ratio method and for
 diagnostics.
 
-This WIC-led rule is a proposal, not the behavior of the live pipeline. Before
-implementation, define the tolerance, tie handling, whether one SI frame may
-be reused by adjacent WIC frames, the timestamp used for Kp, and whether WIC
-frames rejected by the present fullness tests remain absent or survive with a
-validity flag. Store all three source times so this choice remains auditable.
+The schema-2 implementation uses a two-second tolerance. It processes WIC
+frames in stored order and selects the nearest unused SI frame independently
+for each channel; a tie chooses the earlier SI time and then lower source
+index. All source times and indices are stored. Product 2 matches Kp to the
+retained WIC time.
 
 ### Spatial coregistration
 
@@ -224,11 +243,13 @@ Product 1 should contain, per WIC frame and detector pixel:
 Kp and proton-corrected counts do not belong in Product 1. They first enter
 the precipitation calculation.
 
-The current upstream `PreImage` files do not provide a calibrated
-detector-count uncertainty. The existing `BinnedImage.sigma` is within-cell
-spatial spread with optional small-sample inflation; it must not be moved into
-Product 1 and relabelled as detector noise. Defining or sourcing the
-detector-level noise model is an explicit schema and VAE-likelihood gate.
+Schema 2 uses new-fuvpy `img_variance` as conditional detector measurement
+variance. WIC variance is copied on valid support. SI variance is propagated
+through the overlap mean as `sum(a_i^2 v_i) / sum(a_i)^2`, assuming independent
+source pixels. The existing `BinnedImage.sigma` remains within-cell spatial
+spread and must not be relabelled as detector noise. Background-model
+uncertainty, calibration uncertainty, and covariance induced between target
+pixels remain explicit later gates.
 
 ## Product 2: precipitation on the WIC detector geometry
 
@@ -247,11 +268,12 @@ The time axis and detector geometry remain aligned with Product 1. Cells or
 frames lacking a required input are invalid for that method rather than being
 silently removed from the orbit.
 
-The first experimental implementation now provides the `image_ratio` path.
+The schema-2 experimental implementation provides the `image_ratio` path.
 It preserves every Product-1 WIC frame, applies Hardy or constant proton
 energy on the time-dependent detector coordinates, uses the provisional
-map-SI12-counts-then-infer-flux order, and stores method validity separately
-from the three input-channel validity fields. This is a parity product, not a
+map-SI12-counts-then-infer-flux order, supplies the square roots of Product-1
+count variances to icPhysics, and stores method validity separately from the
+three input-channel validity fields. This is a parity product, not a
 candidate publication retrieval. The detector-compatible Zhang--Paxton path
 remains the next separate implementation step.
 

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
+from icreader import load as icload
 import numpy as np
 import pandas as pd
 from netCDF4 import Dataset
@@ -37,11 +38,13 @@ def orbit_number(filename):
 
 
 def read_ratio_pixels(precipitation_file, wic_file):
-    with Dataset(precipitation_file) as nc:
-        ratio = np.asarray(nc.variables["R"][:], dtype=float)
-        wic = np.asarray(nc.variables["wic_corrected"][:], dtype=float)
-        si13 = np.asarray(nc.variables["si13_corrected"][:], dtype=float)
-        source_index = np.asarray(nc.variables["wic_source_index"][:], dtype=int)
+    precipitation = icload(precipitation_file)
+    ratio = np.asarray(precipitation.R, dtype=float)
+    wic = np.asarray(precipitation.wic_corrected, dtype=float)
+    si13 = np.asarray(precipitation.si13_corrected, dtype=float)
+    source_index = np.asarray(
+        precipitation.wic_source_index, dtype=int
+    )
 
     with Dataset(wic_file) as nc:
         dza = np.asarray(nc.variables["dza"][:], dtype=float)[source_index]

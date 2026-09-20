@@ -1,9 +1,77 @@
 # Current State
 
-Last reviewed: 2026-09-18
-Repository snapshot: `modular_pipeline` at `24a7bbf`
-Worktree state: regenerated example products, debugging additions, and the
-fuvpy orbit-runner compatibility change are uncommitted
+Last reviewed: 2026-09-20
+Repository snapshot: `modular_pipeline` at `23ea850`
+Worktree state: regenerated example products, debugging additions, existing
+vault changes, and the implemented icReader migration are uncommitted
+
+## icReader read migration implemented
+
+icReader is now the read boundary for generated products in the active
+detector-first pipeline. Product-2 and Product-3 construction, paired CS
+reduction, detector/CS restart checks, and maintained diagnostics use its
+public context-managed API. Raw NetCDF remains for fuvpy sensor inputs,
+external data, serialization, lookup tables, and tests below the reader
+boundary. Legacy restart scans remain raw because their current readers are
+eager and would decompress entire orbit products merely to decide whether to
+skip them.
+
+icReader gained immutable public per-variable metadata so Product-1 restart
+checks retain units and frame-quality semantics. The CS reducer still reads
+each compressed cube only once. On the four-orbit gate, all generated arrays
+and grids are exactly unchanged; two-worker time improved from 39.60 to 37.77
+seconds and peak RSS remained effectively unchanged at 1,614,272 KB. icReader
+has 34 passing tests. icBuilder has 127 passing tests and only the same four
+deferred legacy grid/lookup failures.
+
+The icReader metadata addition must be committed first. Until its new commit
+exists, icBuilder's dependency follows `modular_pipeline`; replace that with
+the exact resulting commit hash before the icBuilder commit. See
+[[icReader Read Migration Implementation Plan]].
+
+## Detector CS post-processing implemented
+
+The shared post-processing stage now writes `precipitation_cs` and
+`conductance_cs`. The analysis grid is explicitly frozen at 46 by 46, matching
+the current binned FUV and conductance files. Its edges, coordinates,
+projection, and SHA-256 identity are stored so secsy-version changes cannot
+alter the product silently.
+
+Both products reuse one WIC-footprint overlap mapping per frame and common
+field reducers. `conductance_cs` is nevertheless reduced directly from
+`conductance_detector`; it is not recalculated from binned E0 and Fe. Means,
+measurement variance, E0--Fe covariance, clipping fraction, contributor count,
+and central/uncertainty coverage have distinct reducers and stored semantics.
+
+The initial frame-wise NetCDF reader was correct but slow; orbit 0086 exposed
+roughly 2.2 seconds per frame of repeated decompression. The reducer now builds
+all frame mappings first and reads each compressed variable once per orbit.
+Pre/post-optimization files are identical for every stored variable on orbits
+0086 and 0261.
+
+The corrected four-orbit gate completed 0085, 0086, 0261, and 0968 in 39.60
+seconds with two workers and 1,614,780-KB reported peak RSS. All 1,477,851
+central-valid CS cells retain propagated uncertainty. Product-2 CS totals
+90.84 MB and Product-3 CS totals 52.85 MB; all four skip on restart in 0.33
+seconds. Ten focused tests pass; the full suite has 126 passes and the same
+four deferred legacy grid/lookup failures. The legacy 36-by-36 Zhang--Paxton
+lookup remains a later redesign and does not block this slice. See
+[[Detector CS Post-processing Implementation Plan]].
+
+The completed files in the user's four-orbit pipeline test tree have now been
+audited directly. Product 3 agrees with a fresh Robinson calculation to
+float32 precision, and both CS products have consistent masks, support,
+provenance, and recognizable auroral structure. Seven empty CS frames all
+originate from detector frames with no valid Product-2 pixels because one SI
+camera is missing; the CS mapper is not dropping valid data.
+
+Production correctness is therefore confirmed, but science acceptance is not.
+Across these orbits, 52.1--66.2 percent of detector-valid pixels have Hardy
+mean energy clipped below the 0.47-keV response limit. The present retrieval
+uses the clipped energy with no Hardy energy uncertainty. `varE0Fe` is also
+zero everywhere, and 78--97 percent of valid CS cells have dP>P or dH>H. A
+decision about clipped-energy and low-signal validity is required before the
+products should be treated as analysis-ready.
 
 ## fuvpy BS-only orbit preprocessing
 
@@ -14,13 +82,25 @@ and reconstructed viewing geometry, then runs one directional
 spacing, damping `1e-2`, variance weighting, monotonic base fit with ordinary
 fallback, and Spencer-tapered `legacy_x_azimuth` component. The removed
 `backgroundmodel_SH()` call and obsolete `n_tKnots` argument are gone.
+The runner explicitly selects the reference WIC variance model. It therefore
+requires the new fuvpy API whose `read_idl()` exposes `measurement_variance`,
+`poisson_offset`, `wic_variance_model`, and `viewing_geometry`.
 
 The orbit runner now separates storage locations explicitly. `--base_input`
 selects the orbit-index HDF files and raw `wic_data`/`s12_data`/`s13_data`
 directories. `--base_output` selects the sensor NetCDF directories and
 availability arrays; if omitted, it defaults to `base_input`. The former
 `--base` spelling remains an alias for `--base_input`. Missing sensor output
-directories are created automatically.
+directories are created automatically. With no path arguments, the input base
+is `<repository>/example_data`; the script reaches the repository root from
+`scripts/pipeline/` with `Path(__file__).resolve().parents[2]`.
+
+Parallel execution is safe under non-`fork` multiprocessing start methods.
+Argument parsing, HDF loading, and sensor execution live in `main()`, while
+worker functions remain at module scope; the `__main__` guard calls
+`freeze_support()` before `main()`. This is required by Python 3.14's default
+POSIX `forkserver` behavior. A forced two-worker `spawn` test completed WIC
+orbits 0085, 0086, and 0968 with three successful availability entries.
 
 A serial scratch run completed WIC, SI12, and SI13 for example orbits 0085,
 0086, and 0968. All nine availability entries report success. The products
@@ -31,10 +111,13 @@ three orbit products plus the availability array beneath a separate, initially
 absent scratch output base. No tracked example output was regenerated by these
 checks.
 
-This is not yet end-to-end detector-first compatibility.
-`icbuilder/fuvdetector.py` and its tests still require WIC `shimg` and
-`shweight`, so they cannot consume these new BS-only orbit files until the
-source-field and quality-weight contract is migrated and relabelled.
+The BS-only source boundary is now connected to the detector-first pipeline.
+Detector Product 1 requires `dgimg`, `dgweight`, `img_variance`,
+`frame_quality`, and the selected BS-directional `dgmodel` metadata for all
+three sensors. It does not ingest the abandoned internal prototype or provide
+a legacy-Ohma compatibility mode. The implemented contract and remaining
+full-corpus gate are specified in
+[[New fuvpy Detector Product Implementation Plan]].
 
 ## Target product architecture
 
@@ -52,32 +135,36 @@ conductance, not by applying the nonlinear forward model to binned
 precipitation. A separate SI Cubed-Sphere product is not part of the target
 path.
 
-The first experimental detector-first slice is now implemented without
-replacing the existing bin-first production path. `icbuilder/fuvdetector.py`
-loads the current fuvpy WIC `shimg` and SI12/SI13 `dgimg` fields, preserves the
-WIC detector and time axes, matches each SI camera independently, applies the
-established SI-footprint-to-WIC overlap mapping, and writes schema-1
-`fuv_detector` NetCDF. `scripts/pipeline/make_fuv_detector_orbit_files.py`
+The detector-first slice is implemented without replacing the existing
+bin-first production path. `icbuilder/fuvdetector.py` loads the selected new
+fuvpy `dgimg`/`dgweight`/variance/frame-quality contract for every sensor,
+preserves the WIC detector and time axes, matches each SI camera independently,
+applies the established SI-footprint-to-WIC overlap mapping, and writes
+schema-2 `fuv_detector` NetCDF beneath
+`fuv_detector/fuvpy_bs_directional_v1`. WIC variance is copied on valid WIC
+support. SI variance uses the same overlap matrix as signal and propagates
+independent source variance as `sum(a_i^2 v_i) / sum(a_i)^2` with the same
+minimum-coverage rule. `scripts/pipeline/make_fuv_detector_orbit_files.py`
 provides WIC-led orbit discovery, structural/configuration validation,
 source-file identity, and atomic restart-safe publication. Its `--workers`
 option processes independent orbits concurrently when greater than one and
-retains the serial path at the default value of one. Restart validation
-now follows the deliberately small pattern used by `binned_file_status()`: it
-directly checks product identity, the requested preprocessing/timing settings,
-selected source paths and image fields, and required array shapes. Stored
-source hashes and software identity remain provenance, not a restart framework,
-and descriptive prose does not control compatibility.
+retains the serial path at the default value of one. It accepts separate
+`--base-input` and `--base-output` paths, with `--base` retained as the input
+alias. Restart validation directly checks product identity, schema, requested
+preprocessing/timing settings, source paths and image fields, required units,
+frame-quality semantics, and array shapes. Stored source hashes and software
+identity remain provenance; descriptive prose does not control compatibility.
 
 The first 1,687-orbit Halley execution exposed a late-frame geometry edge
 case: finite WIC latitude/longitude can project behind the local tangent plane
 and therefore produce non-finite interpolation coordinates. Those pixels are
 now excluded from the Delaunay input, while the remaining projected WIC
 pixels define the transform. Worker exceptions also report the orbit number.
-Sixteen focused Product-1/coregistration/footprint tests pass.
+Eighteen focused Product-1/coregistration/footprint tests pass.
 
 `icbuilder/precipitationdetector.py` and
-`scripts/pipeline/make_precipitation_detector_orbit_files.py` now implement
-the next experimental boundary: schema-1 `precipitation_detector` using the
+`scripts/pipeline/make_precipitation_detector_orbit_files.py` implement the
+next experimental boundary: schema-3 `precipitation_detector` using the
 image-ratio method. It retains every Product-1 WIC frame, matches definitive
 GFZ Kp to that existing time axis, evaluates Hardy or constant proton energy
 on each frame's detector coordinates, infers proton flux from mapped SI12,
@@ -86,42 +173,196 @@ Cells without all three channels remain in the file but are method-invalid.
 The file copies the Product-1 time, detector geometry, channel support,
 coverage, and quality fields needed to interpret the precipitation state.
 
-The uncertainty fields deliberately retain the existing analytic count model
-only for parity. Product 1 supplies no detector-count uncertainty, mapped-SI
-covariance remains omitted, and the file records those limitations. The
-implemented order maps SI12 counts before proton-flux inference; the documented
-map-versus-infer comparison remains required before this becomes scientific
-policy. The image-ratio path is not the candidate publication retrieval.
+The Product-2 orbit runner defaults to the image-ratio method with Hardy
+proton energy and writes beneath `precipitation_detector/IR_hardy`. It accepts
+separate `--base-input` and `--base-output` paths; the output base defaults to
+the input base, and `--base` remains an input alias. Independent orbits run
+serially by default or through `process_map` when `--workers` is greater than
+one. Each worker owns one output file, atomic publication and restart checks
+are unchanged, and worker errors identify the four-digit orbit number. A real
+two-orbit, two-worker smoke run wrote to a separate output base and the repeat
+run recognized both products as complete.
 
-This is deliberately labelled `current_fuvpy_v1`, not the publication
-preprocessing choice. WIC frames are processed in stored order. Each SI
-channel selects the nearest unused frame within two seconds; ties select the
-earlier SI time and then the lower source index. Unmatched channels retain the
-WIC frame with NaN counts/weights, zero coverage and source count, and source
-index `-1`. Detector noise is explicitly unavailable rather than inferred
-from the old within-bin spread. The sparse overlap operator is not yet stored.
+Four full-length local examples now pass the implemented Product-1 and
+Product-2 restart checks: orbits 0085, 0086, 0261, and 0968 under
+`/home/bing/Dropbox/work/temp_storage/icBuilder_pipeline_test`. They contain
+122, 187, 272, and 312 WIC frames respectively; SI12 and SI13 each match 888
+of the 893 total WIC frames. Product 2 contains 25,328,544 method-valid
+cell-frames, representing 27.0%, 34.1%, 49.9%, and 49.4% of each detector
+cube. Every method-valid cell has finite, non-negative `Ep`, `Fp`, `E0`, and
+`Fe`. The stored ratio is intentionally absent when corrected WIC or SI13 is
+exactly zero and the legacy low-signal branch supplies the central estimate.
+The earlier schema-2 files had finite `dE0`/`dFe` on 90.3--92.4% of
+method-valid cells because of the now-fixed duplicate-noise term described
+below. They are no longer accepted as current Product 2.
 
-An isolated run on the tracked 20-frame orbit-0085 excerpt completed in
-142.69 seconds and wrote an 18.94-MB `(20, 256, 256)` product. All 20 frames
-matched both SI channels within zero to one second. Finite detector support
-was 33.42% for WIC, 32.33% for SI12, and 31.31% for SI13. Stored coverage is
-bounded by one, all three recorded source hashes reproduce, and an immediate
-restart skipped the complete product. This verifies the experimental path and
-serialization, not a complete orbit or publication configuration. The run
-time is too high for a corpus and makes coregistration profiling/optimization
-the next implementation task.
+The four-orbit audit exposes an important scientific limitation rather than a
+file-integrity failure. Hardy mean proton energy lies outside the Frey proton
+response-table range for 52.1--66.2% of method-valid cells, almost entirely
+below the 0.47-keV lower bound, and is therefore clipped before camera-response
+evaluation. `Ep_model`, clipped `Ep`, and `Ep_clipping_flag` preserve this
+distinction. The clipping prevalence must be interpreted before publication
+use or a full-corpus image-ratio claim.
+
+A subsequent uncertainty audit found and resolved a Product-2 propagation bug.
+Product 1 correctly stores fuvpy's conditional Poisson/compound-Poisson
+measurement variance, including the counting-noise term. Product 2 passes
+`sqrt(variance)` into `icphysics.proton_correct_images()`, but that extracted
+legacy function also adds WIC, SI12, and SI13 signal as another Poisson
+variance term. The same counting noise is therefore included twice. Because
+the Product-1 `dgimg` values can be negative after background subtraction,
+the extra signal term can also make the square-root argument negative and
+erase otherwise available uncertainties.
+
+`icphysics.proton_correct_images()` now has an explicit `measurement` mode
+that does not add another image-signal term. Product 2 selects that mode,
+records it in the file, and has moved to schema 3 so stale schema-2 outputs
+are automatically regenerated. Product 3 carries the same provenance and has
+moved to schema 2 so stale uncertainty products are also regenerated.
+
+On full orbit 0085, the corrected implementation makes `dFp`, corrected WIC
+uncertainty, and corrected SI13 uncertainty finite on all 2,437,302
+method-input cells. The old products were finite on 96.0%, 96.0%, and 91.9%
+respectively. Where both versions are finite, the old-to-corrected
+median uncertainty ratios are 1.072, 1.001, and 1.075; the corresponding 95th
+percentiles are 1.336, 1.068, and 1.467. All 2,156,871 method-valid orbit-0085
+cells now have finite `dE0`, `dFe`, `dP`, and `dH`, versus 1,982,337 before.
+Product-2 central `Fp`, `E0`, and `Fe` and Product-3 central `P` and `H` are
+bit-for-bit unchanged. Product 1 does not need regeneration; Products 2 and 3
+do. Background-model discrepancy, calibration and response-model uncertainty,
+mapped-pixel covariance, and nonzero E0--Fe covariance remain omitted.
+
+Detector Product 3 is now implemented separately from the old fixed-grid
+`ConductanceImage` path. `icbuilder/conductancedetector.py` reads schema-3
+`precipitation_detector`, applies the shared icPhysics Robinson function, and
+writes schema-2 `conductance_detector` on the per-frame WIC geometry. It keeps
+the precipitation/proton state, geometry, method quality, source identity,
+central `P`/`H`, uncertainty `dP`/`dH`, and separate central/uncertainty-valid
+masks. Missing precipitation uncertainty does not discard valid central
+conductance. `scripts/pipeline/make_conductance_detector_orbit_files.py`
+defaults to `IR_hardy/robinson`, accepts separate input/output bases, runs
+serially or with `--workers`, validates source/configuration identity, and
+publishes atomically.
+
+A pre-fix two-worker scratch run generated full detector Product 3 for orbits
+0085, 0086, 0261, and 0968 in 49.89 seconds with 6,947,336-KB peak RSS. The
+schema bump now makes those files stale. Their central conductance remains
+valid, but their propagated uncertainty must be regenerated. Corrected orbit
+0085 agrees in central P/H bit-for-bit and has finite dP/dH on all 2,156,871
+central-valid cells. Seven focused Product-3 tests and 37 combined detector
+Product-1/2/3 tests pass; the full suite has 116 passes and the same four known
+grid/lookup failures. Details are in [[Detector Product 3 Implementation Plan]].
+
+Product 2 now requires the schema-2 Product-1 label, reads all three detector
+variances, and passes their square roots to icPhysics. It records that mapped-SI
+target covariance, cross-channel covariance, fitted-background uncertainty,
+and model discrepancy remain omitted. The implemented order maps SI12 counts
+before proton-flux inference; the documented map-versus-infer comparison
+remains required before this becomes scientific policy. The image-ratio path
+is not the candidate publication retrieval.
+
+WIC frames are processed in stored order. Each SI channel selects the nearest
+unused frame within two seconds; ties select the earlier SI time and then the
+lower source index. Unmatched channels retain the WIC frame with NaN
+counts/variance/weights, missing frame quality, zero coverage and source count,
+and source index `-1`. The sparse overlap operator and induced covariance are
+not stored.
+
+A fresh local end-to-end run regenerated the tracked 20-frame orbit-0085
+excerpt with fuvpy `background_model_asymmetry` at `65603e0`, then created
+schema-2 Product 1 in 142.80 seconds. All 20 frames matched both SI channels.
+Finite signal and variance support were identical within each channel:
+438,058 WIC, 423,726 SI12, and 410,400 SI13 cell-frames. A repeat skipped the
+file in 0.64 seconds. Schema-2 Product 2 completed in 17.97 seconds and also
+skipped on repeat. These are superseded pre-optimization timings on the partial
+tracked excerpt.
+
+A larger test-data run under
+`/home/bing/Dropbox/work/temp_storage/icBuilder_pipeline_test` confirms that
+the earlier orbit-0086 delay was a coregistration throughput problem rather
+than a deadlock. Profiling showed that almost all coregistration time was spent
+passing the full 256-by-256 SI detector arrays to the inverse WIC Delaunay
+interpolators even though only about 6,000 pixels had finite geographic
+coordinates. `geographic_to_wic()` now queries only finite projected points
+and reconstructs only points inside the WIC interpolation domain. It retains
+the same full-shaped NaN outputs for unavailable detector slots.
+
+This is an exact-output optimization. On a real orbit-0086 frame, the new and
+old dense calculations produced bit-for-bit identical sparse overlap indices,
+areas, mapped row/column/coverage fields, and coregistration diagnostics. Five
+frames spanning that orbit required 0.12--0.34 seconds for both cameras after
+Numba warm-up, versus the former 4.8--9.1 seconds. A complete 187-frame
+orbit-0086 run wrote the 245,119,212-byte Product 1 in 65.46 seconds, down from
+22 minutes 49 seconds (about 21 times faster end to end), with 187 SI12 and 186
+SI13 matches. Peak RSS was 3.57 GB. A repeat command skipped the complete file
+in 0.56 seconds. At that measured rate, 1,600 similar orbits are about 29 hours
+serial or 2.9 ideal hours with ten orbit workers; allow additional time for
+larger orbits and I/O contention.
+
+Server installation exposed an undeclared-dependency and eager-import problem.
+The editable laptop environment already had `icbuilder` and the wider research
+stack installed, while a clean server environment did not. `pyproject.toml`
+now declares the detector runner's actual third-party stack: ApexPy, netCDF4,
+Numba, NumPy, SciPy, and tqdm. The package root now loads its public workflow
+objects lazily, so importing `icbuilder.fuvdetector` no longer imports unrelated
+`secsy`, `icreader`, `icphysics`, or `sksparse` workflows. The existing public
+`from icbuilder import ...` interface is preserved.
+
+**Confirmed by the user on 2026-09-20:**
+`scripts/pipeline/make_fuv_detector_orbit_files.py` completed successfully on
+the UiB `dynamit` server against the server IMAGE-FUV products. This resolves
+the server execution and environment gate for detector Product 1. The exact
+orbit count, elapsed time, failed-orbit count, and aggregate output validation
+were not reported and should not be inferred from the successful completion.
+
+The initially reported orbit-0085 count of 5 SI12 and 7 SI13 matches was wrong.
+`make_orbit_nc_files.py` wrote `t_start` before `backgroundmodel_BS()` removed
+frames below its quality threshold, while xarray encoded `date` relative to the
+first retained frame. The three resulting files therefore share the stale
+`t_start = 2000-05-15T21:39:17` but have different, correct CF `date.units`.
+The Product-1 loader then ignored those units and added each sensor's elapsed
+values to the stale start, creating artificial offsets of 11--14 seconds.
+
+Both sides are now fixed. `make_orbit_nc_files.py` assigns `t_start` after
+background filtering, and `icbuilder.fuvdetector._source_times()` treats the
+CF `date.units` and optional calendar as authoritative, rejecting missing,
+masked, non-finite, or invalid time metadata. The corrected decoder applied to
+the existing orbit-0085 files gives 121/122 matches for both SI12 and SI13 at
+the existing two-second tolerance; every matched separation is 0 or 1 second.
+Product-1 files generated with the old decoder are invalid and must be
+regenerated, but the corrected reader can consume the existing source sensor
+files without rerunning their background models. New Product-1 files record
+`source_time_decoding = CF date units and calendar`; restart validation requires
+that marker, so a normal pipeline rerun classifies pre-fix Product-1 files as
+invalid and regenerates them rather than silently skipping them. Product 2
+also requires the marker on input, copies it as
+`source_fuv_detector_time_decoding`, and requires that provenance during its
+own restart check. Pre-fix downstream files therefore cannot remain silently
+eligible for restart skipping.
+
+The historical conductance file
+`/home/bing/Dropbox/work/data/IMAGE_FUV/conductance/or_0085.nc` contains 131
+timestamps. The legacy source products contain 235 WIC, 224 SI12, and 232 SI13
+frames, and the original three-camera two-second rule forms 223 groups. All 131
+historical conductance timestamps are members of those groups; the remaining
+92 were removed by the old downstream frame-content filters. The original
+rule required WIC, SI12, and SI13 to span at most two seconds, retained the
+latest timestamp, advanced all three one-to-one, and discarded unmatched
+frames. Schema-2 Product 1 intentionally retains every WIC frame and matches
+each SI channel independently, but keeps the same two-second tolerance.
 
 The established bin-first Product 1 and WIC-CS Product 2/3 remain available.
 The grid-bound 36-by-36 Zhang--Paxton lookup will need a grid-independent
 `(Kp, MLT)` interface before it can operate on per-frame detector geometry.
-The migration also requires a detector-noise model and a test of whether SI12
-counts should be mapped before or after proton-flux inference; the present
-within-bin `sigma` is not detector measurement uncertainty.
+The migration still requires a test of whether SI12 counts should be mapped
+before or after proton-flux inference. The new conditional detector variance
+is the Product-1 count-noise input; the present within-bin `sigma` remains a
+different quantity and must not replace it.
 The full architecture and unresolved choices are in
 [[Detector-First Product Architecture]].
 
-Focused detector Product-1/Product-2 and existing precipitation tests pass
-(`33 passed`). The full suite has `89 passed, 4 failed`; all four
+Focused detector Product-1/Product-2 tests pass (`30 passed`). The full suite
+has `109 passed, 4 failed`; all four
 failures are the previously recorded conflict between the live 46-by-46 CS
 grid and tests/bundled Zhang--Paxton data that still require 36 by 36.
 
@@ -2331,8 +2572,9 @@ short of the several-degree latitudinal displacement under investigation.
   before publication use. The source product's basic flat-field and temporal
   calibration are now documented, while atmosphere and oblique-view response
   remain unresolved.
-- `pyproject.toml` declares no runtime dependencies even though the workflows
-  require a substantial scientific stack.
+- The detector runner's runtime dependencies are declared. Dependencies for
+  the separate grid, physics, reader, and spline workflows still need explicit
+  optional-dependency groups or their own installation documentation.
 - No general automated test suite or CI workflow exists beyond the new focused
   collapse tests.
 - Several processing scripts contain machine-specific paths or high

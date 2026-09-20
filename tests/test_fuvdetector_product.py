@@ -359,6 +359,22 @@ def test_detector_product_netcdf_is_self_describing_and_restart_safe(tmp_path):
         documentation_edit, PREPROCESSING_LABEL, source_files
     ) == "complete"
 
+    wrong_units = tmp_path / "wrong_units.nc"
+    shutil.copy2(output, wrong_units)
+    with Dataset(wrong_units, "r+") as nc:
+        nc["wic_counts"].units = "not counts"
+    assert ORBIT_SCRIPT.fuv_detector_file_status(
+        wrong_units, PREPROCESSING_LABEL, source_files
+    ) == "invalid"
+
+    wrong_flags = tmp_path / "wrong_flags.nc"
+    shutil.copy2(output, wrong_flags)
+    with Dataset(wrong_flags, "r+") as nc:
+        nc["wic_frame_quality"].flag_meanings = "wrong"
+    assert ORBIT_SCRIPT.fuv_detector_file_status(
+        wrong_flags, PREPROCESSING_LABEL, source_files
+    ) == "invalid"
+
     old_time_decoder = tmp_path / "old_time_decoder.nc"
     shutil.copy2(output, old_time_decoder)
     with Dataset(old_time_decoder, "r+") as nc:

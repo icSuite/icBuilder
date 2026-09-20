@@ -7,6 +7,7 @@ name = "icbuilder"
 version = "0.1"
 dependencies = [
     "apexpy",
+    "icreader @ git+https://github.com/icSuite/icReader.git@modular_pipeline",
     "netCDF4",
     "numba",
     "numpy",

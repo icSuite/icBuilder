@@ -9,29 +9,18 @@ from functools import partial
 from pathlib import Path
 
 import numpy as np
-from netCDF4 import Dataset
+from icreader import open_product
 from tqdm import tqdm
 from tqdm.contrib.concurrent import process_map
 
 from icbuilder.conductancedetector import (
     CONDUCTANCE_MODEL,
-    GEOMETRY_FIELDS,
-    PRECIPITATION_FIELDS,
     SCHEMA_VERSION,
-    TIME_FIELDS,
-    TIME_VALUE_FIELDS,
     ConductanceDetector,
 )
 
 
 #%% Product validation and atomic publication
-
-RESULT_FIELDS = (
-    "P", "H", "dP", "dH", "method_quality_weight",
-    "method_valid", "conductance_valid", "conductance_uncertainty_valid",
-    "Ep_clipping_flag",
-)
-
 
 def conductance_detector_file_status(
     filename,
@@ -49,64 +38,50 @@ def conductance_detector_file_status(
 
     try:
         source_stat = source_precipitation.stat()
-        with Dataset(filename) as nc, Dataset(source_precipitation) as source:
+        with open_product(filename) as product, open_product(
+            source_precipitation
+        ) as source:
             if (
-                nc.product_type != "conductance_detector"
-                or nc.representation != "detector"
-                or int(nc.schema_version) != SCHEMA_VERSION
+                product.product_type != "conductance_detector"
+                or product.representation != "detector"
+                or int(product.schema_version) != SCHEMA_VERSION
             ):
                 return "invalid"
             if (
-                nc.conductance_model != conductance_model
-                or nc.source_precipitation_detector
+                product.conductance_model != conductance_model
+                or product.source_precipitation_detector
                 != str(source_precipitation)
-                or int(nc.source_precipitation_detector_size_bytes)
+                or int(product.attrs["source_precipitation_detector_size_bytes"])
                 != source_stat.st_size
-                or int(nc.source_precipitation_detector_mtime_ns)
+                or int(product.attrs["source_precipitation_detector_mtime_ns"])
                 != source_stat.st_mtime_ns
             ):
                 return "mismatch"
             if (
                 source.product_type != "precipitation_detector"
                 or source.representation != "detector"
-                or nc.precipitation_method != source.method
-                or nc.proton_flux_source != source.proton_flux_source
-                or nc.proton_energy_model != source.proton_energy_model
-                or nc.count_uncertainty_mode
+                or product.precipitation_method != source.method
+                or product.proton_flux_source != source.proton_flux_source
+                or product.proton_energy_model != source.proton_energy_model
+                or product.count_uncertainty_mode
                 != source.count_uncertainty_mode
-                or int(nc.source_precipitation_detector_schema_version)
+                or int(
+                    product.attrs["source_precipitation_detector_schema_version"]
+                )
                 != int(source.schema_version)
             ):
                 return "mismatch"
             if source.proton_energy_model == "constant" and (
                 not np.isclose(
-                    nc.proton_energy_constant,
+                    product.proton_energy_constant,
                     source.proton_energy_constant,
                 )
                 or not np.isclose(
-                    nc.proton_energy_uncertainty_constant,
+                    product.proton_energy_uncertainty_constant,
                     source.proton_energy_uncertainty_constant,
                 )
             ):
                 return "mismatch"
-
-            shape = (
-                len(nc.dimensions["time"]),
-                len(nc.dimensions["row"]),
-                len(nc.dimensions["column"]),
-            )
-            if any(length == 0 for length in shape):
-                return "invalid"
-            for name in GEOMETRY_FIELDS + PRECIPITATION_FIELDS + RESULT_FIELDS:
-                if nc.variables[name].shape != shape:
-                    return "invalid"
-            for name in TIME_FIELDS + TIME_VALUE_FIELDS:
-                if nc.variables[name].shape != (shape[0],):
-                    return "invalid"
-            if nc.variables["detector_row"].shape != (shape[1],):
-                return "invalid"
-            if nc.variables["detector_column"].shape != (shape[2],):
-                return "invalid"
     except (OSError, RuntimeError, KeyError, AttributeError, ValueError):
         return "invalid"
 

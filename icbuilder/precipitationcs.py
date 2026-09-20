@@ -11,7 +11,6 @@ from .detectorcs import (
     BINNING_METHOD,
     UNCERTAINTY_METHOD,
     read_common_time_fields,
-    read_variable,
     reduce_area_mean,
     reduce_covariance,
     reduce_flag_fraction,
@@ -91,20 +90,7 @@ def _require_source(source, filename):
             f"{PRECIPITATION_METHOD} precipitation_detector product"
         )
 
-    shape = (
-        len(source.dimensions["time"]),
-        len(source.dimensions["row"]),
-        len(source.dimensions["column"]),
-    )
-    if any(length == 0 for length in shape):
-        raise ValueError("precipitation_detector dimensions must be non-empty")
-    for name in (
-        "mlat", "mlt", "method_valid", "Ep_clipping_flag",
-        *MEAN_FIELDS, *UNCERTAINTY_FIELDS, *COVARIANCE_FIELDS,
-    ):
-        if source.variables[name].shape != shape:
-            raise ValueError(f"{name} must have shape {shape}")
-    return shape
+    return source.shape
 
 
 #%% Product implementation
@@ -112,58 +98,53 @@ def _require_source(source, filename):
 class PrecipitationCS:
     """Area-reduced representation of one detector Product-2 orbit."""
 
-    def __init__(self, filename, *, grid, software_version):
-        filename = Path(filename)
+    def __init__(self, source, *, grid, software_version):
+        filename = Path(source.filename)
         self.source_identity = source_identity(filename)
         self.grid = grid
         self.grid_id = DETECTOR_CS_GRID_ID
         self.grid_coordinate_sha256 = DETECTOR_CS_COORDINATE_SHA256
         self.software_version = str(software_version)
 
-        with Dataset(filename) as source:
-            detector_shape = _require_source(source, filename)
-            self.shape = (detector_shape[0], *grid.shape)
-            self.reference_height_km = float(source.reference_height_km)
-            self.time_fields = read_common_time_fields(source)
+        detector_shape = _require_source(source, filename)
+        self.shape = (detector_shape[0], *grid.shape)
+        self.reference_height_km = float(source.reference_height_km)
+        self.time_fields = read_common_time_fields(source)
 
-            self.method = source.method
-            self.proton_flux_source = source.proton_flux_source
-            self.proton_energy_model = source.proton_energy_model
-            self.proton_energy_uncertainty_method = (
-                source.proton_energy_uncertainty_method
+        self.method = source.method
+        self.proton_flux_source = source.proton_flux_source
+        self.proton_energy_model = source.proton_energy_model
+        self.proton_energy_uncertainty_method = (
+            source.proton_energy_uncertainty_method
+        )
+        self.proton_energy_coordinate_note = (
+            source.proton_energy_coordinate_note
+        )
+        self.proton_response_energy_min = float(
+            source.proton_response_energy_min
+        )
+        self.proton_response_energy_max = float(
+            source.proton_response_energy_max
+        )
+        self.proton_operation_order = source.proton_operation_order
+        self.count_uncertainty_mode = source.count_uncertainty_mode
+        self.count_uncertainty_method = source.count_uncertainty_method
+        self.coordinate_system = source.coordinate_system
+        self.source_software_version = source.software_version
+        self.source_fuv_detector = source.source_fuv_detector
+        self.source_fuv_detector_sha256 = source.source_fuv_detector_sha256
+        self.source_preprocessing_label = source.source_preprocessing_label
+        self.source_fuv_detector_time_decoding = (
+            source.source_fuv_detector_time_decoding
+        )
+        self.kp_provenance = dict(source.kp_provenance)
+        if self.proton_energy_model == "constant":
+            self.proton_energy_constant = float(
+                source.proton_energy_constant
             )
-            self.proton_energy_coordinate_note = (
-                source.proton_energy_coordinate_note
+            self.proton_energy_uncertainty_constant = float(
+                source.proton_energy_uncertainty_constant
             )
-            self.proton_response_energy_min = float(
-                source.proton_response_energy_min
-            )
-            self.proton_response_energy_max = float(
-                source.proton_response_energy_max
-            )
-            self.proton_operation_order = source.proton_operation_order
-            self.count_uncertainty_mode = source.count_uncertainty_mode
-            self.count_uncertainty_method = source.count_uncertainty_method
-            self.coordinate_system = source.coordinate_system
-            self.source_software_version = source.software_version
-            self.source_fuv_detector = source.source_fuv_detector
-            self.source_fuv_detector_sha256 = source.source_fuv_detector_sha256
-            self.source_preprocessing_label = source.source_preprocessing_label
-            self.source_fuv_detector_time_decoding = (
-                source.source_fuv_detector_time_decoding
-            )
-            self.kp_provenance = {
-                name[3:]: source.getncattr(name)
-                for name in source.ncattrs()
-                if name.startswith("kp_")
-            }
-            if self.proton_energy_model == "constant":
-                self.proton_energy_constant = float(
-                    source.proton_energy_constant
-                )
-                self.proton_energy_uncertainty_constant = float(
-                    source.proton_energy_uncertainty_constant
-                )
 
         for name in MEAN_FIELDS | UNCERTAINTY_FIELDS | COVARIANCE_FIELDS:
             setattr(self, name, np.full(self.shape, np.nan))
@@ -180,26 +161,26 @@ class PrecipitationCS:
         """Reduce one detector frame with a caller-supplied common mapping."""
 
         output_shape = self.grid.shape
-        method_valid = read_variable(
-            source.variables["method_valid"], frame, bool
+        method_valid = np.asarray(
+            source.read("method_valid", frame), dtype=bool
         )
 
         for name in MEAN_FIELDS:
-            values = read_variable(source.variables[name], frame)
+            values = np.asarray(source.read(name, frame), dtype=float)
             reduced, _ = reduce_area_mean(
                 values, method_valid, mapping, output_shape
             )
             getattr(self, name)[frame] = reduced
 
         for name in UNCERTAINTY_FIELDS:
-            uncertainty = read_variable(source.variables[name], frame)
+            uncertainty = np.asarray(source.read(name, frame), dtype=float)
             variance, _ = reduce_measurement_variance(
                 uncertainty**2, method_valid, mapping, output_shape
             )
             getattr(self, name)[frame] = np.sqrt(variance)
 
         for name in COVARIANCE_FIELDS:
-            covariance = read_variable(source.variables[name], frame)
+            covariance = np.asarray(source.read(name, frame), dtype=float)
             reduced, _ = reduce_covariance(
                 covariance, method_valid, mapping, output_shape
             )
@@ -210,15 +191,17 @@ class PrecipitationCS:
         )
         uncertainty_valid = (
             method_valid
-            & np.isfinite(read_variable(source.variables["dE0"], frame))
-            & np.isfinite(read_variable(source.variables["dFe"], frame))
-            & np.isfinite(read_variable(source.variables["varE0Fe"], frame))
+            & np.isfinite(np.asarray(source.read("dE0", frame), dtype=float))
+            & np.isfinite(np.asarray(source.read("dFe", frame), dtype=float))
+            & np.isfinite(
+                np.asarray(source.read("varE0Fe", frame), dtype=float)
+            )
         )
         uncertainty_count, uncertainty_coverage = reduce_support(
             uncertainty_valid, mapping, cell_area, output_shape
         )
         clipping_fraction, clipping_any = reduce_flag_fraction(
-            read_variable(source.variables["Ep_clipping_flag"], frame, bool),
+            np.asarray(source.read("Ep_clipping_flag", frame), dtype=bool),
             method_valid,
             mapping,
             output_shape,
@@ -237,10 +220,10 @@ class PrecipitationCS:
         """Reduce the orbit while reading each compressed variable only once."""
 
         output_shape = self.grid.shape
-        method_valid = read_variable(source.variables["method_valid"], dtype=bool)
+        method_valid = np.asarray(source.read("method_valid"), dtype=bool)
 
         for name in MEAN_FIELDS:
-            values = read_variable(source.variables[name])
+            values = np.asarray(source.read(name), dtype=float)
             for frame, mapping in enumerate(mappings):
                 reduced, _ = reduce_area_mean(
                     values[frame], method_valid[frame], mapping, output_shape
@@ -249,7 +232,7 @@ class PrecipitationCS:
 
         uncertainty_valid = method_valid.copy()
         for name in UNCERTAINTY_FIELDS:
-            uncertainty = read_variable(source.variables[name])
+            uncertainty = np.asarray(source.read(name), dtype=float)
             if name in ("dE0", "dFe"):
                 uncertainty_valid &= np.isfinite(uncertainty)
             for frame, mapping in enumerate(mappings):
@@ -262,7 +245,7 @@ class PrecipitationCS:
                 getattr(self, name)[frame] = np.sqrt(variance)
 
         for name in COVARIANCE_FIELDS:
-            covariance = read_variable(source.variables[name])
+            covariance = np.asarray(source.read(name), dtype=float)
             uncertainty_valid &= np.isfinite(covariance)
             for frame, mapping in enumerate(mappings):
                 reduced, _ = reduce_covariance(
@@ -273,8 +256,8 @@ class PrecipitationCS:
                 )
                 getattr(self, name)[frame] = reduced
 
-        clipping_flag = read_variable(
-            source.variables["Ep_clipping_flag"], dtype=bool
+        clipping_flag = np.asarray(
+            source.read("Ep_clipping_flag"), dtype=bool
         )
         for frame, mapping in enumerate(mappings):
             count, coverage = reduce_support(
