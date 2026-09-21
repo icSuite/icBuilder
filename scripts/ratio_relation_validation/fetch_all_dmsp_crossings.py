@@ -3,6 +3,7 @@
 #%% Imports
 
 import argparse
+from multiprocessing import get_context
 from pathlib import Path
 
 from icreader import open_product
@@ -247,6 +248,41 @@ def save_orbit(data, filename):
     data.to_netcdf(filename, engine="netcdf4", encoding=encoding)
 
 
+def process_and_save(image_file, output_path, dmsp_files, dmsp_cache):
+    """Process one orbit and return its orbit number and match count."""
+
+    orbit = int(image_file.stem.split("_")[-1])
+    result = process_orbit(image_file, dmsp_files, dmsp_cache)
+    save_orbit(result, output_path / f"or_{orbit:04d}.nc")
+    count = result.sizes["sample"]
+    result.close()
+    return orbit, count
+
+
+_worker_dmsp_files = None
+_worker_dmsp_cache = None
+
+
+def initialize_worker(dmsp_path):
+    """Give each process independent DMSP file handles and a local cache."""
+
+    global _worker_dmsp_files, _worker_dmsp_cache
+    _worker_dmsp_files = index_dmsp_files(dmsp_path)
+    _worker_dmsp_cache = {}
+
+
+def process_in_worker(task):
+    """Multiprocessing entry point; all netCDF files are opened here."""
+
+    image_file, output_path = task
+    return process_and_save(
+        image_file,
+        output_path,
+        _worker_dmsp_files,
+        _worker_dmsp_cache,
+    )
+
+
 #%% Run
 
 def main():
@@ -255,8 +291,14 @@ def main():
     parser.add_argument("--image-path", type=Path, default=DEFAULT_IMAGE_PATH)
     parser.add_argument("--output-path", type=Path, default=DEFAULT_OUTPUT_PATH)
     parser.add_argument("--orbit", type=int, nargs="+")
+    parser.add_argument(
+        "--workers", type=int, default=1,
+        help="number of independent orbit workers; 1 runs serially",
+    )
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
+    if args.workers < 1:
+        raise ValueError("--workers must be at least 1")
 
     image_files = sorted(args.image_path.glob("or_*.nc"))
     if args.orbit:
@@ -272,20 +314,37 @@ def main():
     if not dmsp_files:
         raise FileNotFoundError(f"No yearly DMSP files found in {args.dmsp_path}")
 
-    dmsp_cache = {}
-    try:
-        for image_file in tqdm(image_files, desc="DMSP crossings"):
-            orbit = int(image_file.stem.split("_")[-1])
-            output_file = args.output_path / f"or_{orbit:04d}.nc"
-            if output_file.exists() and not args.overwrite:
-                continue
-            result = process_orbit(image_file, dmsp_files, dmsp_cache)
-            save_orbit(result, output_file)
-            print(f"Orbit {orbit:04d}: {result.sizes['sample']} matches")
-            result.close()
-    finally:
-        for data in dmsp_cache.values():
-            data.close()
+    tasks = []
+    for image_file in image_files:
+        orbit = int(image_file.stem.split("_")[-1])
+        output_file = args.output_path / f"or_{orbit:04d}.nc"
+        if output_file.exists() and not args.overwrite:
+            continue
+        tasks.append((image_file, args.output_path))
+
+    if args.workers == 1:
+        dmsp_cache = {}
+        try:
+            for image_file, output_path in tqdm(tasks, desc="DMSP crossings"):
+                orbit, count = process_and_save(
+                    image_file, output_path, dmsp_files, dmsp_cache
+                )
+                print(f"Orbit {orbit:04d}: {count} matches")
+        finally:
+            for data in dmsp_cache.values():
+                data.close()
+    else:
+        context = get_context("spawn")
+        with context.Pool(
+            args.workers,
+            initializer=initialize_worker,
+            initargs=(args.dmsp_path,),
+        ) as pool:
+            results = pool.imap_unordered(process_in_worker, tasks)
+            for orbit, count in tqdm(
+                results, total=len(tasks), desc="DMSP crossings"
+            ):
+                print(f"Orbit {orbit:04d}: {count} matches")
 
 
 if __name__ == "__main__":
