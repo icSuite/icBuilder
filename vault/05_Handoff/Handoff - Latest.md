@@ -1,9 +1,148 @@
 # Handoff - Latest
 
-Last updated: 2026-09-20
+Last updated: 2026-09-21
 Repository snapshot: `modular_pipeline` at `23ea850`
 Worktree state: regenerated example products, debugging additions, existing
 vault changes, and the implemented icReader migration are uncommitted
+
+## Latest checkpoint: detector DMSP crossing extraction
+
+The new `scripts/ratio_relation_validation/fetch_all_dmsp_crossings.py` has
+been migrated off the legacy CS product. It reads schema-3
+`precipitation_detector`, uses each frame's native Modified-Apex detector
+geometry, and matches F12--F15 SSJ samples within centered +/-60-s temporal
+support to their nearest WIC pixel. It writes one compressed NetCDF per orbit
+instead of accumulating a multi-gigabyte dataframe. Existing files are skipped
+unless `--overwrite` is supplied. Its three data locations can be passed as
+`--dmsp-path`, `--image-path`, and `--output-path`.
+
+The saved flat sample contract includes absolute IMAGE and DMSP times,
+satellite, source indices, detector indices, angular separation, DMSP energy
+and flux with fractional uncertainties, and the relevant stored Product-2
+corrected counts, ratio, energy, uncertainties, DZA, method validity, and
+quality weight. Extraction deliberately saves all temporal candidates and does
+not impose a detector-distance or scientific-quality cut.
+
+The simplified orbit-0364 gate wrote 8,315 rows in about 4.4 s, with exact -60 to +60 s
+offsets and no duplicate IMAGE-time/DMSP-time/satellite keys. Median, 95th,
+and maximum spatial separations are 0.198, 1.431, and 11.265 degrees. The next
+validation stage must therefore establish an explicit spatial-support rule
+before fitting the IMAGE-ratio/DMSP-energy relation. Existing CS-era DMSP
+annotations should be joined by orbit, absolute image time, and satellite;
+legacy `frame_id` is only advisory.
+
+The extractor accepts `--workers N`, with `1` as the serial default.
+Multiprocessing uses `spawn`; each process opens its own IMAGE file and keeps
+its own independently opened DMSP-file cache. Orbit 0364 and 0968 outputs were
+byte-identical between serial and two-worker runs. On this small
+unequal-duration gate, wall time fell from 13.7 to 9.7 s; larger pools may be
+limited by disk bandwidth.
+
+The initial detector-based analysis is implemented in
+`scripts/ratio_relation_validation/ratio_validation.py`. It reads the new
+per-orbit files, joins accepted legacy annotations using orbit + absolute
+IMAGE time + satellite rather than CS frame index, and writes quality
+histograms, selected-distribution histograms, a ratio-energy relation figure,
+and `data/ratio_energy_bins.nc`. The latter explicitly stores a 50x40
+ratio/energy count grid, conditional DMSP-energy quantiles for each ratio bin,
+and conditional IMAGE-ratio quantiles for each DMSP-energy bin. The two
+conditional directions are plotted separately over the same 2-D histogram,
+with the Frey relation overlaid on both.
+
+The analysis loader treats an empty `sample` dataset as a successfully
+processed zero-match orbit and skips it. Required-field validation remains in
+place for every non-empty crossing file.
+
+The same validation workflow is now available for the fixed-grid CS Product 2
+through `fetch_all_dmsp_crossings_cs.py` and `ratio_validation_cs.py`. CS
+crossing files remain per orbit and store the fixed-grid row/column,
+centre-to-footprint angular separation, and an explicit inside-grid flag. The
+analysis reuses annotations by orbit, absolute IMAGE time, and satellite,
+requires the footprint to be inside the CS domain, and applies a provisional
+1-degree centre-separation cut. It writes separate CS figures and
+`data/ratio_energy_bins_cs.nc`, including conditional quantiles in both axis
+directions. Serial and two-worker extraction produced identical results for
+orbits 0085 and 0086 (3,847 and 6,938 temporal matches); the annotated
+two-orbit analysis completed with 258 selected pairs.
+
+The active 0.25 DMSP-energy fractional-uncertainty, 0.20 flux fractional-
+uncertainty, 1-degree detector-separation, 0--150 ratio, and 0--8-keV energy
+limits are provisional analysis choices. Inspect the full-data histograms
+before treating them as durable quality rules. The two-orbit unannotated gate
+loaded 41,275 candidates and retained 5,474 after these cuts.
+
+## Latest checkpoint: detector and CS Coumans diagnostics implemented
+
+`reconstruct_coumans_figure4a_detector.py` now reproduces the Figure-4a track
+geometry from detector Product 1. Unlike the older IDL script, the full orbit
+product contains the exact Coumans WIC frame at 23:35:29 UTC. The script plots
+background-corrected WIC counts, maps the DMSP 130-km geographic footprint to
+the time-dependent detector geometry, and writes PNG/PDF output beneath the
+paper-reconstruction figure tree. The centered DMSP interval is
+23:34:32--23:36:29; median/maximum nearest-pixel angular separations are
+0.138/0.233 degrees. The script now also renders the next three WIC frames at
+23:37:32, 23:39:34, and 23:41:37 UTC. Each output independently maps the DMSP
+track using that frame's detector geometry and selects its own centered
+plus-or-minus-60-s support. Green and red points are explicitly labelled as
+the support start and end; they are not WIC exposure endpoints.
+
+Orbit-0364 detector precipitation is now available, and one maintained Frey
+Figure-16 reconstruction has been revived as
+`scripts/paper_reconstructions/reconstruct_frey_figure16_detector.py`. It uses
+the 2000-10-28 11:38:24 UTC `precipitation_detector/IR_hardy` frame. Stored
+Product-2 `E0` and `Fe` supply the final mean-energy and energy-flux panels.
+The added orbit-0364 Product-1 file matches Product 2's recorded SHA-256 and
+all frame/source indices. Its exact SI12, WIC, and SI13 counts now supply the
+sensor panels. Uncorrected mean energy is calculated from Product-1 WIC/SI13
+only where WIC is at least 50 and SI13 at least 3 counts. The earlier attempt
+to reverse Product 2's clipped proton correction has been removed. The script
+ran successfully and wrote its PNG/PDF pair to
+`figures/paper_reconstructions/frey_2003`.
+
+The detector and CS Coumans Figure-4b plots were both truncated to
+23:34--23:45 UTC and reran successfully. This changes display extent only.
+Both now also overlay the earlier direct-count calculation as a dashed blue
+curve: `wic_corrected / si13_corrected`, then the Frey lookup, without the
+Product-2 50/3 energy fallback. Detector Product 2 supplies 366 finite stored
+ratios versus 519 direct ratios. CS Product 2 supplies 434 stored ratios versus
+599 direct ratios; its direct curve is calculated after binning, while its
+stored retrieval fields are overlap-reduced from detector Product 2.
+
+The paper-reconstruction folder now contains
+`reconstruct_coumans_figure4b_detector.py`, which accepts schema-3
+`precipitation_detector` input through icReader. Because detector products do
+not have a fixed CS grid, it groups DMSP samples by nearest IMAGE frame and
+queries a per-frame spherical KD-tree built from WIC-pixel MLAT/MLT. Stored
+Product-2 ratio, energy, and uncertainty fields are sampled at those pixels.
+
+The additional `reconstruct_coumans_figure4b_cs.py` accepts schema-1
+`precipitation_cs` and uses its reconstructed 46-by-46 grid. Both scripts now
+sample the canonical stored `R`, `dR`, `E0`, and `dE0` fields directly; they
+do not recalculate the retrieval from corrected WIC/SI13 counts.
+
+Orbit 0968 completed with 599 centered samples in both scripts: 366 finite
+detector ratios and 434 finite CS ratios. Stored E0 remains finite for 580 and
+599 samples because the low-signal retrieval branches can define E0 when R is
+not finite. Both PNG/PDF pairs rendered beneath
+`figures/paper_reconstructions/coumans_2004`.
+Both versions shade the native DMSP mean-energy uncertainty using
+`ELE_AVG_ENERGY * ELE_AVG_ENERGY_STD`; the legend deliberately calls this an
+estimated uncertainty range because the source metadata does not explicitly
+identify it as a one-sigma interval.
+Both versions shade the stored IMAGE `dR` and `dE0` fields. Large ratio
+intervals can dominate the display, so the figure clips only the displayed
+ratio band at 1.5 times the Frey table maximum and labels that choice; the
+stored numerical uncertainty is not modified.
+
+The plot exposed a Product-2 legacy boundary bug. At the orbit-0968 detector
+peak, the file stores `R = 204.74 +/- 79.48` but `E0 = 25 keV` and `dE0 = 0`.
+The Frey ratio table stops at 136.49. Its legacy constant upper fill makes the
+finite-difference derivative zero outside the table, falsely erasing energy
+uncertainty. The 15-keV figure cap is display-only. CS uncertainty reduction
+itself is active and uses squared normalized overlap weights, but faithfully
+propagates this erroneous zero. Product 2 needs an explicit out-of-domain
+ratio policy and downstream regeneration before these uncertainties should be
+treated as scientifically valid.
 
 ## Latest checkpoint: icReader read migration implemented
 
@@ -37,9 +176,10 @@ commit, and then commit icBuilder. See
 ## Latest checkpoint: detector CS post-processing implemented
 
 The user selected 46 by 46 for the first fixed detector-CS representation.
-The implementation freezes its edges and verifies all coordinates with a
-durable SHA-256 identity rather than inheriting dimensions silently from the
-installed secsy version.
+The implementation now validates only the 46-by-46 shape. The former exact
+coordinate hash was removed from the writer, restart check, and icReader after
+it blocked the server run before orbit 0085 in a different numerical
+environment.
 
 One combined post-processing runner creates `precipitation_cs` and
 `conductance_cs`, building the WIC detector-footprint mapping once per frame
@@ -47,7 +187,7 @@ and applying explicit reducers for means, measurement variance, covariance,
 flags, quality, counts, and coverage. Conductance is always reduced from
 detector Product 3, never recalculated from binned Product 2. Separate bases,
 atomic restart, orbit-level workers, source-pair validation, and schema/grid
-identity checks are implemented.
+shape checks are implemented.
 
 Ten focused tests pass, including a real two-worker run and a nonlinear
 ordering guard. The full suite has 126 passes and the same four deferred

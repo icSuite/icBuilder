@@ -1,6 +1,55 @@
 # Decision Log
 
-Last reviewed: 2026-09-03
+Last reviewed: 2026-09-21
+
+## 2026-09-20 — Freeze detector CS post-processing at 46 by 46
+
+**Decision:** Produce `precipitation_cs` and `conductance_cs` as a shared
+post-processing stage on one explicitly frozen 46-by-46 grid. Reuse the WIC
+detector-footprint mapping and field reducers, but reduce conductance directly
+from `conductance_detector` rather than calculating it from binned
+precipitation.
+
+Defer the legacy 36-by-36 Zhang--Paxton lookup and bin-first conductance
+infrastructure. Their redesign is required later but does not block the
+image-ratio and Robinson CS products.
+
+**Rationale:** Current binned IMAGE and conductance products are 46 by 46, and
+Products 2 and 3 share identical WIC detector geometry. Freezing the grid
+prevents secsy-version drift; sharing the mapping avoids duplicate geometry
+work; binning after the nonlinear Robinson calculation preserves the accepted
+detector-first architecture.
+
+**Amendment, 2026-09-21:** Validate only that the CS grid is 46 by 46. Do not
+hash or require exact byte-level equality of derived coordinates. The exact
+coordinate hash blocked production across otherwise valid numerical
+environments before the server could process orbit 0085.
+
+Implementation details and verification gates are maintained in
+[[Detector CS Post-processing Implementation Plan]].
+
+## 2026-09-19 — Replace the abandoned detector preprocessing prototype
+
+**Decision:** Treat only Ohma's legacy fuvpy implementation and the new fuvpy
+implementation currently on `background_model_asymmetry` as meaningful
+preprocessing states. Remove the internal `current_fuvpy_v1` prototype from
+live icBuilder code, tests, and current documentation. Do not preserve it as a
+runtime compatibility mode or create parallel Product-1 branches for it.
+
+Only the new fuvpy implementation is a detector Product-1 ingestion target.
+Legacy Ohma fuvpy remains available for comparison and historical validation;
+do not implement a legacy detector-product loader or conversion path.
+
+Implement one new BS-directional detector Product-1 contract using `dgimg`,
+`dgweight`, detector measurement variance, and source frame quality. The
+detailed implementation and verification sequence is maintained in
+[[New fuvpy Detector Product Implementation Plan]].
+
+**Rationale:** The internal prototype no longer exists as a supported
+implementation and has no meaning to users outside its development history.
+Retaining its labels and field assumptions would add dead complexity and make
+the current preprocessing boundary harder to understand. Versioning should
+describe real product contracts, not preserve abandoned scaffolding.
 
 ## 2026-09-03 — Keep Product-1 restart status direct
 

@@ -23,7 +23,7 @@ from .detectorcs import (
     write_common_cs_coordinates,
 )
 from .fuvdetector import source_identity
-from .grids import DETECTOR_CS_COORDINATE_SHA256, DETECTOR_CS_GRID_ID
+from .grids import DETECTOR_CS_GRID_ID
 from .precipitationdetector import COUNT_UNCERTAINTY_MODE
 
 
@@ -88,7 +88,6 @@ class ConductanceCS:
         self.source_identity = source_identity(filename)
         self.grid = grid
         self.grid_id = DETECTOR_CS_GRID_ID
-        self.grid_coordinate_sha256 = DETECTOR_CS_COORDINATE_SHA256
         self.software_version = str(software_version)
         self.companion_precipitation_cs = ""
 
@@ -288,7 +287,6 @@ class ConductanceCS:
             nc.representation = "cs"
             nc.schema_version = SCHEMA_VERSION
             nc.grid_id = self.grid_id
-            nc.grid_coordinate_sha256 = self.grid_coordinate_sha256
             nc.binning_method = BINNING_METHOD
             nc.uncertainty_method = UNCERTAINTY_METHOD
             nc.conductance_model = self.conductance_model

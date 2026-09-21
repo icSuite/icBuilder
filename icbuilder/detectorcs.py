@@ -210,7 +210,6 @@ def write_common_cs_coordinates(nc, product):
 
     grid_group = nc.createGroup("grid")
     grid_group.grid_id = product.grid_id
-    grid_group.coordinate_sha256 = product.grid_coordinate_sha256
     grid_group.position = np.asarray(product.grid.projection.position, dtype=float)
     grid_group.orientation = np.asarray(
         product.grid.projection.orientation, dtype=float

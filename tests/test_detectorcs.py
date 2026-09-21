@@ -11,9 +11,7 @@ from icbuilder.detectorcs import (
     reduce_support,
 )
 from icbuilder.grids import (
-    DETECTOR_CS_COORDINATE_SHA256,
     DETECTOR_CS_GRID_ID,
-    detector_cs_coordinate_hash,
     make_detector_cs_grid,
 )
 
@@ -23,7 +21,6 @@ def test_detector_cs_grid_is_frozen_at_46_by_46():
 
     assert DETECTOR_CS_GRID_ID == "image_apex_130km_46x46_v1"
     assert grid.shape == (46, 46)
-    assert detector_cs_coordinate_hash(grid) == DETECTOR_CS_COORDINATE_SHA256
 
 
 def test_two_footprint_reducers_match_hand_calculation():

@@ -17,10 +17,7 @@ from icbuilder.detectorcs import (
     BINNING_METHOD,
     build_detector_cs_products,
 )
-from icbuilder.grids import (
-    DETECTOR_CS_COORDINATE_SHA256,
-    DETECTOR_CS_GRID_ID,
-)
+from icbuilder.grids import DETECTOR_CS_GRID_ID
 from icbuilder.precipitationcs import SCHEMA_VERSION as PRECIPITATION_CS_SCHEMA_VERSION
 from icbuilder.conductancecs import SCHEMA_VERSION as CONDUCTANCE_CS_SCHEMA_VERSION
 
@@ -33,7 +30,7 @@ def _common_cs_status(product, product_type, schema_version):
         or product.representation != "cs"
         or int(product.schema_version) != schema_version
         or product.grid_id != DETECTOR_CS_GRID_ID
-        or product.grid_coordinate_sha256 != DETECTOR_CS_COORDINATE_SHA256
+        or product.shape[1:] != (46, 46)
         or product.binning_method != BINNING_METHOD
     ):
         return "invalid"

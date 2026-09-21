@@ -1,9 +1,152 @@
 # Current State
 
-Last reviewed: 2026-09-20
+Last reviewed: 2026-09-21
 Repository snapshot: `modular_pipeline` at `23ea850`
 Worktree state: regenerated example products, debugging additions, existing
 vault changes, and the implemented icReader migration are uncommitted
+
+## Detector DMSP crossing extraction implemented
+
+`scripts/ratio_relation_validation/fetch_all_dmsp_crossings.py` now builds the
+raw ratio-validation match set from schema-3 detector Product 2 rather than the
+legacy binned grid. It associates each DMSP second with IMAGE frames using
+centered plus-or-minus-60-s support, then maps the DMSP Modified-Apex position
+to the nearest pixel in that frame's time-dependent WIC detector geometry.
+The output is one compressed NetCDF file per orbit, keyed by
+absolute IMAGE/DMSP times, DMSP satellite, source-frame indices, detector
+row/column, and angular separation. It carries the stored corrected counts,
+ratio, energy, uncertainties, DZA, method validity, and quality weight needed
+for later filtering. It deliberately applies no spatial or scientific-quality
+cut during extraction. DMSP, IMAGE, and output paths are ordinary command-line
+arguments (`--dmsp-path`, `--image-path`, and `--output-path`).
+
+Orbit 0364 completed against the local detector test product in about 4.4 s
+with 8,315 temporal matches. Offsets span exactly -60 to +60 s; there are no
+duplicate IMAGE-time/DMSP-time/satellite keys. The median/95th/maximum nearest
+pixel separation is 0.198/1.431/11.265 degrees, confirming that downstream
+analysis must define a spatial-support criterion rather than treating every
+temporal candidate as a physical crossing. Existing output files are skipped
+unless `--overwrite` is explicit.
+
+Crossing extraction accepts `--workers N`, defaulting to `1` for serial
+execution. Parallel workers use the multiprocessing `spawn` context and each
+opens and caches its own DMSP yearly files; no netCDF/HDF5 handle crosses a
+process boundary. A two-orbit gate with two workers produced files
+byte-identical to the serial outputs and reduced wall time from 13.7 to 9.7 s.
+Disk throughput is expected to limit scaling, so two to four workers are the
+appropriate initial range.
+
+`scripts/ratio_relation_validation/ratio_validation.py` now consumes the
+per-orbit detector-crossing files instead of legacy `matches.nc`. It migrates
+accepted crossing decisions by orbit, absolute IMAGE time, and satellite,
+fixes the old finite-selection boolean error, and produces separate initial
+quality and post-selection distribution figures. The current analysis
+thresholds are deliberately explicit and provisional: DMSP energy fractional
+uncertainty at most 0.25, flux fractional uncertainty at most 0.20, and
+nearest-detector-pixel separation at most 1 degree.
+
+The loader skips completed zero-match orbit files. The extractor represents
+these as an empty `sample` dataset with no data variables; non-empty orbit
+files still undergo full required-field validation.
+
+CS-grid counterparts are implemented as
+`scripts/ratio_relation_validation/fetch_all_dmsp_crossings_cs.py` and
+`ratio_validation_cs.py`. The extractor samples the nearest cell of each
+fixed 46-by-46 Product-2 CS grid, records row/column, angular separation, and
+whether the footprint lies within the grid, and retains the detector
+extractor's per-orbit restart and multiprocessing behavior. The analysis uses
+the existing orbit/time/satellite annotations, requires an inside-grid match,
+and currently applies a provisional 1-degree nearest-cell threshold. Its
+figures and `ratio_energy_bins_cs.nc` contain both conditional-quantile
+directions. Orbits 0085 and 0086 were identical between serial and two-worker
+runs; an annotated two-orbit analysis retained 258 selected pairs and
+completed successfully.
+
+The final relation is built with explicit fixed bins (50 ratio bins over
+0--150 and 40 DMSP-energy bins over 0--8 keV). The saved NetCDF contains the
+2-D counts, sample counts along both axes, DMSP-energy quantiles conditioned
+on ratio bins, and IMAGE-ratio quantiles conditioned on DMSP-energy bins.
+Both directions use 10/25/50/75/90% quantiles and require at least 20 samples
+per conditioning bin. Separate relation figures overlay each conditional view
+and the Frey response. A two-orbit unannotated development gate loaded 41,275
+matches, retained 5,474 after provisional quality cuts, and completed without
+error. Full-data cutoff choices remain to be reviewed from the new histograms.
+
+## Detector and CS Coumans comparisons implemented
+
+`scripts/paper_reconstructions/reconstruct_coumans_figure4a_detector.py`
+reconstructs Figure 4a directly on detector Product 1. The full orbit product
+contains the exact 2001-10-21 23:35:29 UTC WIC frame cited by Coumans, so the
+older IDL diagnostic's 23:37:32 substitute is no longer needed. The script
+plots background-corrected WIC counts and maps the 130-km DMSP F15 footprint
+track onto the frame's per-pixel geographic geometry. Centered support spans
+23:34:32--23:36:29 UTC; nearest-pixel separation is 0.138 degrees median and
+0.233 degrees maximum. The script also writes the following three WIC frames,
+at 23:37:32, 23:39:34, and 23:41:37 UTC, so the DMSP traversal can be followed
+as a four-frame sequence. It remaps the footprint track against each frame's
+own detector geometry and highlights that frame's centered plus-or-minus-60-s
+support. The green and red points mark the start and end of this DMSP support;
+they do not represent the WIC exposure duration.
+
+`scripts/paper_reconstructions/reconstruct_coumans_figure4b_detector.py` is
+the detector-Product-2 counterpart to the older fixed-grid reconstruction. It
+matches each DMSP sample to the nearest IMAGE frame within plus or minus 60
+seconds, then uses a per-frame spherical nearest-neighbour search in magnetic
+latitude and MLT to sample stored Product-2 ratio, energy, and uncertainty
+fields.
+
+The detector script ran against orbit 0968 in the local pipeline test tree. It
+found 599 centered DMSP samples and wrote the PNG and PDF without error.
+
+`reconstruct_coumans_figure4b_cs.py` samples the schema-1
+`precipitation_cs` product on its reconstructed 46-by-46 grid at the DMSP
+footprints and writes to `figures/paper_reconstructions/coumans_2004`. Both
+paper reconstructions use the products' canonical stored `R`, `dR`, `E0`, and
+`dE0`; they do not recalculate retrievals from corrected counts. This is a
+paper-reconstruction diagnostic, not a new product-generation stage.
+Both figures now show the DMSP SSJ estimated average-energy uncertainty as a
+shaded range computed from the stored fractional `ELE_AVG_ENERGY_STD` field.
+They also shade the stored IMAGE ratio and characteristic-energy uncertainty.
+Orbit 0968 has 366/434 finite detector/CS ratios, while stored E0 remains
+available for 580/599 samples because the Product-2 low-signal fallback can
+produce an energy estimate without a finite ratio. Very large stored ratio
+uncertainties are unchanged numerically; only their displayed band is clipped
+to the fixed plotting range.
+
+The orbit-0968 reconstruction exposed an electron-energy boundary defect in
+the current image-ratio retrieval. One sampled detector pixel stores
+`R = 204.74`, `dR = 79.48`, `E0 = 25 keV`, and `dE0 = 0`. The Frey response
+table ends at `R = 136.49`; the legacy `interp1d` returns a constant 25-keV
+fill above that range, and its finite-difference derivative is therefore zero.
+This turns substantial ratio uncertainty into zero energy uncertainty. The
+figure's 15-keV cap is display-only and is not the source of the defect.
+
+CS reduction does propagate stored detector variance with squared normalized
+overlap weights, assuming independent detector pixels. It therefore propagates
+valid `dR` and `dE0` values, but it cannot repair a detector `dE0` that was
+already set to zero by the out-of-range lookup. Ratio-domain validity or
+censoring must be fixed in Product 2 before regenerating downstream products.
+
+The maintained Frey Figure-16 reconstruction is now
+`scripts/paper_reconstructions/reconstruct_frey_figure16_detector.py`. It reads
+orbit 0364 from detector Product 2 (`precipitation_detector/IR_hardy`) and
+selects the 2000-10-28 11:38:24 UTC frame. Final electron mean energy and
+energy flux are the stored Product-2 `E0` and `Fe`. The locally added Product-1
+file exactly matches Product 2's recorded SHA-256, all 232 times, and source
+indices. The script reads SI12, WIC, and SI13 from that exact Product-1 frame
+and calculates uncorrected mean energy from its WIC/SI13 ratio after requiring
+WIC at least 50 and SI13 at least 3 counts. It no longer attempts to reverse
+the clipped proton correction. The verified PNG/PDF outputs are under
+`figures/paper_reconstructions/frey_2003`.
+
+Both maintained Coumans Figure-4b scripts now display only 23:34--23:45 UTC.
+Their product sampling and centered plus-or-minus-60-s matching are unchanged.
+They overlay the stored Product-2 `R`/`E0` series with a dashed direct-count
+calculation: corrected WIC divided by corrected SI13, followed by the Frey
+lookup without the Product-2 50/3 fallback. The detector comparison has
+366 stored versus 519 direct finite ratios. The CS comparison has 434 stored
+versus 599 direct finite ratios; there the direct curve is a ratio of binned
+corrected counts, whereas the stored fields are reduced detector retrievals.
 
 ## icReader read migration implemented
 
@@ -32,10 +175,10 @@ the exact resulting commit hash before the icBuilder commit. See
 ## Detector CS post-processing implemented
 
 The shared post-processing stage now writes `precipitation_cs` and
-`conductance_cs`. The analysis grid is explicitly frozen at 46 by 46, matching
-the current binned FUV and conductance files. Its edges, coordinates,
-projection, and SHA-256 identity are stored so secsy-version changes cannot
-alter the product silently.
+`conductance_cs`. The analysis grid is fixed at 46 by 46, matching the current
+binned FUV and conductance files. CS production and reading validate its shape
+only; exact coordinate hashes were removed after their byte-level comparison
+failed across the server's numerical environment.
 
 Both products reuse one WIC-footprint overlap mapping per frame and common
 field reducers. `conductance_cs` is nevertheless reduced directly from
@@ -72,6 +215,11 @@ uses the clipped energy with no Hardy energy uncertainty. `varE0Fe` is also
 zero everywhere, and 78--97 percent of valid CS cells have dP>P or dH>H. A
 decision about clipped-energy and low-signal validity is required before the
 products should be treated as analysis-ready.
+
+The full server CS run has not completed. Its first attempt stopped on orbit
+0085 at the former coordinate-hash check. Hash attributes and validation have
+now been removed from both icBuilder and icReader; rerunning on the server is
+the next production gate.
 
 ## fuvpy BS-only orbit preprocessing
 

@@ -208,7 +208,6 @@ def process_orbit(image_file, dmsp_files, dmsp_cache):
             "source_preprocessing_label": image.attrs["source_preprocessing_label"],
             "proton_energy_model": image.proton_energy_model,
             "grid_id": image.grid_id,
-            "grid_coordinate_sha256": image.grid_coordinate_sha256,
         })
         return result
 
