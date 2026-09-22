@@ -32,6 +32,7 @@ SCHEMA_VERSION = 2
 TIME_TOLERANCE_SECONDS = 2.0
 PREPROCESSING_LABEL = "fuvpy_bs_directional_v1"
 IMAGE_FIELDS = {"WIC": "dgimg", "SI12": "dgimg", "SI13": "dgimg"}
+UNSUBTRACTED_IMAGE_FIELDS = {"WIC": "img", "SI12": "img", "SI13": "img"}
 QUALITY_WEIGHT_METHOD = "fuvpy dgweight on the native detector"
 SOURCE_TIME_DECODING = "CF date units and calendar"
 BS_MODEL_CONTRACT = {
@@ -65,7 +66,8 @@ def describe_time_match_rule(tolerance_seconds):
 TIME_MATCH_RULE = describe_time_match_rule(TIME_TOLERANCE_SECONDS)
 DETECTOR_NOISE_MODEL = (
     "img_variance from fuvpy is treated as independent detector-pixel count "
-    "variance. SI variance is propagated through the area-weighted mean as "
+    "variance shared by the background-subtracted and unsubtracted counts. "
+    "SI variance is propagated through the area-weighted mean as "
     "sum(a_i^2 variance_i) / sum(a_i)^2. Correlated, background-model, and "
     "coregistration uncertainties are not included."
 )
@@ -173,17 +175,19 @@ def _validate_background_model(nc, filename):
 
 
 def load_detector_source(filename, sensor):
-    """Load one corrected sensor orbit without changing its detector geometry."""
+    """Load corrected and unsubtracted images on native detector geometry."""
 
     sensor = sensor.upper()
     if sensor not in IMAGE_FIELDS:
         raise ValueError("sensor must be WIC, SI12, or SI13")
     image_field = IMAGE_FIELDS[sensor]
+    unsubtracted_image_field = UNSUBTRACTED_IMAGE_FIELDS[sensor]
 
     filename = Path(filename)
     with Dataset(filename) as nc:
         required = (
-            image_field, "dgweight", "img_variance", "frame_quality",
+            image_field, unsubtracted_image_field,
+            "dgweight", "img_variance", "frame_quality",
             "glat", "glon", "sza", "dza", "date", "t_start",
         )
         missing = [name for name in required if name not in nc.variables]
@@ -194,6 +198,9 @@ def load_detector_source(filename, sensor):
         _validate_background_model(nc, filename)
 
         counts = _as_float(nc.variables[image_field])
+        unsubtracted_counts = _as_float(
+            nc.variables[unsubtracted_image_field]
+        )
         dgweight = _as_float(nc.variables["dgweight"])
         variance = _as_float(nc.variables["img_variance"])
         frame_quality = _as_float(nc.variables["frame_quality"])
@@ -207,6 +214,7 @@ def load_detector_source(filename, sensor):
     if len(shape) != 3 or time.shape != (shape[0],):
         raise ValueError("source counts must have shape (time, row, column)")
     for name, values in (
+        ("unsubtracted_counts", unsubtracted_counts),
         ("dgweight", dgweight), ("img_variance", variance),
         ("glat", glat), ("glon", glon), ("sza", sza), ("dza", dza),
     ):
@@ -227,8 +235,10 @@ def load_detector_source(filename, sensor):
     source.update({
         "sensor": sensor,
         "image_field": image_field,
+        "unsubtracted_image_field": unsubtracted_image_field,
         "time": time,
         "counts": counts,
+        "unsubtracted_counts": unsubtracted_counts,
         "variance": variance,
         "frame_quality": frame_quality,
         "quality_weight": dgweight,
@@ -322,10 +332,12 @@ def _empty_channel(shape, time_count):
 
     return {
         "counts": np.full(shape, np.nan),
+        "unsubtracted_counts": np.full(shape, np.nan),
         "variance": np.full(shape, np.nan),
         "quality_weight": np.full(shape, np.nan),
         "coverage": np.zeros(shape),
         "valid": np.zeros(shape, dtype=bool),
+        "unsubtracted_valid": np.zeros(shape, dtype=bool),
         "source_count": np.zeros(shape, dtype=np.int32),
         "source_index": np.full(time_count, -1, dtype=np.int32),
         "source_time": np.full(time_count, None, dtype=object),
@@ -350,7 +362,7 @@ def _source_count(mapping, valid, shape):
 
 
 class FUVDetector:
-    """Coregister corrected WIC, SI12, and SI13 observations on WIC pixels."""
+    """Coregister subtracted and unsubtracted FUV images on WIC pixels."""
 
     def __init__(
         self,
@@ -398,6 +410,9 @@ class FUVDetector:
         }
         self.source_mtime_ns = {"wic": int(wic.get("source_mtime_ns", -1))}
         self.image_fields = {"wic": wic.get("image_field", "unknown")}
+        self.unsubtracted_image_fields = {
+            "wic": wic.get("unsubtracted_image_field", "unknown")
+        }
         self.wic_source_index = np.arange(self.shape[0], dtype=np.int32)
         self.wic_source_time = self.time.copy()
         self.wic_frame_quality = np.asarray(
@@ -407,13 +422,15 @@ class FUVDetector:
             raise ValueError("WIC frame_quality must contain one value per frame")
 
         for name in (
-            "counts", "variance", "quality_weight", "glat", "glon", "mlat", "mlon",
-            "mlt", "sza", "dza",
+            "counts", "unsubtracted_counts", "variance", "quality_weight",
+            "glat", "glon", "mlat", "mlon", "mlt", "sza", "dza",
         ):
             values = np.asarray(wic[name])
             if values.shape != self.shape:
                 raise ValueError(f"WIC {name} does not match WIC count dimensions")
             output_name = "wic_counts" if name == "counts" else name
+            if name == "unsubtracted_counts":
+                output_name = "wic_unsubtracted_counts"
             if name == "variance":
                 output_name = "wic_variance"
             if name == "quality_weight":
@@ -426,6 +443,10 @@ class FUVDetector:
 
         self.wic_valid = (
             np.isfinite(self.wic_counts)
+            & np.asarray(wic["geometry_valid"], dtype=bool)
+        )
+        self.wic_unsubtracted_valid = (
+            np.isfinite(self.wic_unsubtracted_counts)
             & np.asarray(wic["geometry_valid"], dtype=bool)
         )
         self.wic_variance = np.where(
@@ -450,6 +471,9 @@ class FUVDetector:
                 self.source_size_bytes[name] = -1
                 self.source_mtime_ns[name] = -1
                 self.image_fields[name] = IMAGE_FIELDS[name.upper()]
+                self.unsubtracted_image_fields[name] = (
+                    UNSUBTRACTED_IMAGE_FIELDS[name.upper()]
+                )
                 continue
             self.source_products[name] = sensor.get("source_file", "")
             self.source_sha256[name] = sensor.get("source_sha256", "")
@@ -458,6 +482,9 @@ class FUVDetector:
             )
             self.source_mtime_ns[name] = int(sensor.get("source_mtime_ns", -1))
             self.image_fields[name] = sensor.get("image_field", "unknown")
+            self.unsubtracted_image_fields[name] = sensor.get(
+                "unsubtracted_image_field", "unknown"
+            )
             channels[name]["source_index"] = match_wic_times(
                 self.time, sensor["time"], self.time_tolerance_seconds
             )
@@ -493,6 +520,16 @@ class FUVDetector:
                     mapping,
                     self.shape[1:],
                 )
+                valid_unsubtracted_counts = (
+                    np.isfinite(sensor["unsubtracted_counts"][source_index])
+                    & sensor["geometry_valid"][source_index]
+                )
+                unsubtracted_counts, _ = map_si(
+                    sensor["unsubtracted_counts"][source_index],
+                    valid_unsubtracted_counts,
+                    mapping,
+                    self.shape[1:],
+                )
                 valid_weight = (
                     valid_counts
                     & np.isfinite(sensor["quality_weight"][source_index])
@@ -516,12 +553,18 @@ class FUVDetector:
                 )
 
                 channels[name]["counts"][frame] = counts
+                channels[name]["unsubtracted_counts"][frame] = (
+                    unsubtracted_counts
+                )
                 channels[name]["variance"][frame] = variance
                 channels[name]["quality_weight"][frame] = quality_weight
                 # Retain the raw overlap excess in the frame diagnostics, while
                 # storing coverage itself as the requested [0, 1] fraction.
                 channels[name]["coverage"][frame] = np.minimum(coverage, 1)
                 channels[name]["valid"][frame] = np.isfinite(counts)
+                channels[name]["unsubtracted_valid"][frame] = np.isfinite(
+                    unsubtracted_counts
+                )
                 channels[name]["source_count"][frame] = _source_count(
                     mapping, valid_counts, self.shape[1:]
                 )
@@ -623,6 +666,7 @@ class FUVDetector:
             nc.coregistration_max_roundtrip_error_km = MAX_COREG_ERROR_KM
             nc.coregistration_minimum_coverage = MIN_SI_COVERAGE
             nc.coregistration_overlap_operator_stored = np.int8(0)
+            nc.unsubtracted_counts_stored = np.int8(1)
 
             for sensor in ("wic", "si12", "si13"):
                 nc.setncattr(f"source_{sensor}", self.source_products[sensor])
@@ -638,6 +682,10 @@ class FUVDetector:
                     np.int64(self.source_mtime_ns[sensor]),
                 )
                 nc.setncattr(f"{sensor}_image_field", self.image_fields[sensor])
+                nc.setncattr(
+                    f"{sensor}_unsubtracted_image_field",
+                    self.unsubtracted_image_fields[sensor],
+                )
 
             time_units = "seconds since 2000-01-01 00:00:00"
             self._write_time(nc, "time", self.time, time_units)
@@ -668,6 +716,9 @@ class FUVDetector:
                 "wic_counts": "counts",
                 "si12_counts": "counts",
                 "si13_counts": "counts",
+                "wic_unsubtracted_counts": "counts",
+                "si12_unsubtracted_counts": "counts",
+                "si13_unsubtracted_counts": "counts",
                 "wic_variance": "counts^2",
                 "si12_variance": "counts^2",
                 "si13_variance": "counts^2",
@@ -694,10 +745,13 @@ class FUVDetector:
                 variable.units = units
 
             for sensor in ("wic", "si12", "si13"):
-                valid = nc.createVariable(
-                    f"{sensor}_valid", "i1", dimensions, zlib=True
-                )
-                valid[:] = getattr(self, f"{sensor}_valid").astype(np.int8)
+                for name in ("valid", "unsubtracted_valid"):
+                    valid = nc.createVariable(
+                        f"{sensor}_{name}", "i1", dimensions, zlib=True
+                    )
+                    valid[:] = getattr(
+                        self, f"{sensor}_{name}"
+                    ).astype(np.int8)
 
             for sensor in ("si12", "si13"):
                 source_count = nc.createVariable(

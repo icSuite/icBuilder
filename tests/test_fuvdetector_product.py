@@ -49,8 +49,12 @@ def regular_camera(sensor, size, spacing, times, value):
         "sensor": sensor,
         "source_file": f"{sensor.lower()}.nc",
         "image_field": "dgimg",
+        "unsubtracted_image_field": "img",
         "time": np.asarray(times, dtype=object),
         "counts": np.full(frame_shape, value, dtype=float),
+        "unsubtracted_counts": np.full(
+            frame_shape, value + 100.0, dtype=float
+        ),
         "variance": np.full(frame_shape, 4.0, dtype=float),
         "frame_quality": np.full(len(times), 2, dtype=np.int8),
         "quality_weight": np.full(frame_shape, 0.8, dtype=float),
@@ -83,6 +87,7 @@ def write_source_orbit(path, sensor="WIC", missing=None):
         nc.createDimension("col", 2)
         fields = {
             "dgimg": np.full(shape, 10.0),
+            "img": np.full(shape, 110.0),
             "dgweight": np.full(shape, 0.75),
             "img_variance": np.full(shape, 4.0),
             "glat": np.full(shape, 70.0),
@@ -126,7 +131,9 @@ def test_source_loader_uses_only_the_new_fuvpy_contract(tmp_path):
     source = load_detector_source(path, "WIC")
 
     assert source["image_field"] == "dgimg"
+    assert source["unsubtracted_image_field"] == "img"
     np.testing.assert_allclose(source["counts"], 10.0)
+    np.testing.assert_allclose(source["unsubtracted_counts"], 110.0)
     np.testing.assert_allclose(source["quality_weight"], 0.75)
     np.testing.assert_allclose(source["variance"], 4.0)
     np.testing.assert_array_equal(source["frame_quality"], [2])
@@ -144,7 +151,7 @@ def test_source_loader_uses_cf_date_units_when_t_start_is_stale(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "missing", ["dgimg", "dgweight", "img_variance", "frame_quality"]
+    "missing", ["dgimg", "img", "dgweight", "img_variance", "frame_quality"]
 )
 def test_source_loader_rejects_missing_schema2_fields(tmp_path, missing):
     path = tmp_path / f"missing_{missing}.nc"
@@ -249,8 +256,16 @@ def test_detector_product_coregisters_each_si_channel_independently():
     np.testing.assert_array_equal(product.si13_source_index, [-1, 0])
     np.testing.assert_allclose(product.si12_counts[0], 5.0)
     np.testing.assert_allclose(product.si13_counts[1], 7.0)
+    np.testing.assert_allclose(product.wic_unsubtracted_counts, 110.0)
+    np.testing.assert_allclose(product.si12_unsubtracted_counts[0], 105.0)
+    np.testing.assert_allclose(product.si13_unsubtracted_counts[1], 107.0)
     assert np.isnan(product.si12_counts[1]).all()
     assert np.isnan(product.si13_counts[0]).all()
+    assert np.isnan(product.si12_unsubtracted_counts[1]).all()
+    assert np.isnan(product.si13_unsubtracted_counts[0]).all()
+    assert product.wic_unsubtracted_valid.all()
+    assert product.si12_unsubtracted_valid[0].all()
+    assert product.si13_unsubtracted_valid[1].all()
     assert np.all(product.si12_coverage[0] >= 0.9)
     assert np.all(product.si13_coverage[1] >= 0.9)
     assert np.all(product.si12_source_count[0] >= 1)
@@ -326,6 +341,10 @@ def test_detector_product_netcdf_is_self_describing_and_restart_safe(tmp_path):
         assert nc.wic_image_field == "dgimg"
         assert nc.si12_image_field == "dgimg"
         assert nc.si13_image_field == "dgimg"
+        assert nc.unsubtracted_counts_stored == 1
+        assert nc.wic_unsubtracted_image_field == "img"
+        assert nc.si12_unsubtracted_image_field == "img"
+        assert nc.si13_unsubtracted_image_field == "img"
         assert "independent detector-pixel" in nc.detector_noise_model
         assert nc.coregistration_overlap_operator_stored == 0
         assert "Kp" not in nc.variables
@@ -340,6 +359,13 @@ def test_detector_product_netcdf_is_self_describing_and_restart_safe(tmp_path):
         assert np.ma.getmaskarray(nc["si13_frame_quality"][:]).all()
         np.testing.assert_allclose(nc["wic_variance"][:], 4.0)
         np.testing.assert_allclose(nc["si12_counts"][0], 5.0)
+        np.testing.assert_allclose(nc["wic_unsubtracted_counts"][:], 110.0)
+        np.testing.assert_allclose(
+            nc["si12_unsubtracted_counts"][0], 105.0
+        )
+        assert nc["wic_unsubtracted_counts"].units == "counts"
+        assert nc["wic_unsubtracted_valid"][:].all()
+        assert nc["si12_unsubtracted_valid"][0].all()
         assert np.isnan(nc["si12_counts"][1]).all()
         assert np.ma.getmaskarray(nc["si13_source_time"][:]).all()
 
@@ -393,6 +419,16 @@ def test_detector_product_netcdf_is_self_describing_and_restart_safe(tmp_path):
         missing_diagnostic, PREPROCESSING_LABEL, source_files
     ) == "invalid"
 
+    missing_unsubtracted = tmp_path / "missing_unsubtracted.nc"
+    shutil.copy2(output, missing_unsubtracted)
+    with Dataset(missing_unsubtracted, "r+") as nc:
+        nc.renameVariable(
+            "si12_unsubtracted_counts", "removed_unsubtracted_counts"
+        )
+    assert ORBIT_SCRIPT.fuv_detector_file_status(
+        missing_unsubtracted, PREPROCESSING_LABEL, source_files
+    ) == "invalid"
+
     changed_sources = source_files | {"si12": tmp_path / "different_si12.nc"}
     assert ORBIT_SCRIPT.fuv_detector_file_status(
         output, PREPROCESSING_LABEL, changed_sources
@@ -414,6 +450,8 @@ def test_product_status_rejects_missing_required_field(tmp_path):
                 f"{sensor}_image_field",
                 "dgimg",
             )
+            nc.setncattr(f"{sensor}_unsubtracted_image_field", "img")
+        nc.unsubtracted_counts_stored = np.int8(1)
         nc.createDimension("time", 1)
         nc.createDimension("row", 2)
         nc.createDimension("column", 2)

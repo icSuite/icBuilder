@@ -45,8 +45,12 @@ def regular_camera(sensor, size, spacing, times, value):
         "sensor": sensor,
         "source_file": f"{sensor.lower()}.nc",
         "image_field": "dgimg",
+        "unsubtracted_image_field": "img",
         "time": np.asarray(times, dtype=object),
         "counts": np.full(frame_shape, value, dtype=float),
+        "unsubtracted_counts": np.full(
+            frame_shape, value + 100.0, dtype=float
+        ),
         "variance": np.full(frame_shape, 4.0, dtype=float),
         "frame_quality": np.full(len(times), 2, dtype=np.int8),
         "quality_weight": np.full(frame_shape, 0.8),

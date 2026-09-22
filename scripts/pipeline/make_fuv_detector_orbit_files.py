@@ -21,6 +21,7 @@ from icbuilder.fuvdetector import (
     SCHEMA_VERSION,
     SOURCE_TIME_DECODING,
     TIME_TOLERANCE_SECONDS,
+    UNSUBTRACTED_IMAGE_FIELDS,
     FUVDetector,
 )
 
@@ -123,6 +124,8 @@ def fuv_detector_file_status(
                 return "mismatch"
             if product.source_time_decoding != SOURCE_TIME_DECODING:
                 return "invalid"
+            if int(product.attrs.get("unsubtracted_counts_stored", 0)) != 1:
+                return "invalid"
 
             for sensor in ("wic", "si12", "si13"):
                 source = source_files[sensor]
@@ -133,6 +136,17 @@ def fuv_detector_file_status(
                     != IMAGE_FIELDS[sensor.upper()]
                 ):
                     return "mismatch"
+                if (
+                    product.attrs.get(f"{sensor}_unsubtracted_image_field")
+                    != UNSUBTRACTED_IMAGE_FIELDS[sensor.upper()]
+                ):
+                    return "invalid"
+                for field in (
+                    f"{sensor}_unsubtracted_counts",
+                    f"{sensor}_unsubtracted_valid",
+                ):
+                    if product.read(field, 0).shape != product.shape[1:]:
+                        return "invalid"
             expected_units = {
                 "counts": "counts",
                 "variance": "counts^2",
