@@ -40,6 +40,7 @@ IMAGE_FIELDS = {
     "E0": "img_energy",
     "dE0": "img_energy_std",
     "dza": "wic_dza",
+    "sza": "wic_sza",
     "method_quality_weight": "quality_weight",
     "method_valid": "method_valid",
 }
@@ -234,6 +235,9 @@ def process_orbit(image_file, dmsp_files, dmsp_cache):
             "source_fuv_detector_sha256": image.source_fuv_detector_sha256,
             "source_preprocessing_label": image.source_preprocessing_label,
             "proton_energy_model": image.proton_energy_model,
+            "source_count_source": image.attrs.get(
+                "count_source", "background_subtracted"
+            ),
         })
         return result
 

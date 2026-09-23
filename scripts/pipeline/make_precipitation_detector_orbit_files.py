@@ -15,6 +15,7 @@ from tqdm.contrib.concurrent import process_map
 
 from icbuilder.kp import load_gfz_kp
 from icbuilder.precipitationdetector import (
+    COUNT_SOURCES,
     COUNT_UNCERTAINTY_MODE,
     PRECIPITATION_METHOD,
     PROTON_ENERGY_MODELS,
@@ -32,6 +33,7 @@ def precipitation_detector_file_status(
     proton_energy_model,
     proton_energy,
     proton_energy_uncertainty,
+    count_source="background_subtracted",
 ):
     """Return missing, invalid, mismatch, or complete for one Product-2 file."""
 
@@ -52,6 +54,9 @@ def precipitation_detector_file_status(
                 or product.proton_flux_source != "SI12"
                 or product.proton_energy_model != proton_energy_model
                 or product.source_fuv_detector != str(source_fuv_detector)
+                or product.attrs.get(
+                    "count_source", "background_subtracted"
+                ) != count_source
             ):
                 return "mismatch"
             if (
@@ -86,6 +91,7 @@ def save_precipitation_detector(product, filename):
             product.proton_energy_model,
             product.proton_energy_constant,
             product.proton_energy_uncertainty_constant,
+            product.count_source,
         )
         if status != "complete":
             raise RuntimeError(f"incomplete precipitation_detector file: {partial}")
@@ -139,6 +145,7 @@ def process_orbit(
     proton_energy_model,
     proton_energy,
     proton_energy_uncertainty,
+    count_source,
     software_version,
 ):
     """Calculate and save one detector-space precipitation orbit."""
@@ -151,6 +158,7 @@ def process_orbit(
             proton_energy_model=proton_energy_model,
             proton_energy=proton_energy,
             proton_energy_uncertainty=proton_energy_uncertainty,
+            count_source=count_source,
             software_version=software_version,
         )
         output = output_directory / f"or_{orbit:04d}.nc"
@@ -201,6 +209,12 @@ def parse_args(argv=None):
         "--proton-energy-uncertainty", type=float, default=0.0
     )
     parser.add_argument(
+        "--count-source",
+        choices=COUNT_SOURCES,
+        default="background_subtracted",
+        help="Product-1 count stage (default: background_subtracted).",
+    )
+    parser.add_argument(
         "--workers", type=int, default=1,
         help="Number of orbit workers; 1 runs serially (default: 1).",
     )
@@ -219,7 +233,15 @@ def main(argv=None):
         if args.base_output is not None else base_input
     )
     input_directory = base_input / args.input_folder
-    retrieval_label = args.retrieval_label or f"IR_{args.proton_energy_model}"
+    if args.retrieval_label is None:
+        suffix = (
+            ""
+            if args.count_source == "background_subtracted"
+            else "_unsubtracted"
+        )
+        retrieval_label = f"IR_{args.proton_energy_model}{suffix}"
+    else:
+        retrieval_label = args.retrieval_label
     output_directory = base_output / args.output_folder / retrieval_label
     output_directory.mkdir(parents=True, exist_ok=True)
 
@@ -242,6 +264,7 @@ def main(argv=None):
             args.proton_energy_model,
             args.proton_energy,
             args.proton_energy_uncertainty,
+            args.count_source,
         )
         if status == "mismatch":
             raise ValueError(
@@ -270,6 +293,7 @@ def main(argv=None):
         proton_energy_model=args.proton_energy_model,
         proton_energy=args.proton_energy,
         proton_energy_uncertainty=args.proton_energy_uncertainty,
+        count_source=args.count_source,
         software_version=software_version,
     )
     if args.workers > 1:

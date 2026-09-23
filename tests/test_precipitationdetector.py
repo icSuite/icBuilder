@@ -142,6 +142,46 @@ def test_image_ratio_runs_on_product1_detector_geometry(tmp_path):
     )
 
 
+def test_unsubtracted_counts_use_common_support_without_dgweight(tmp_path):
+    source = tmp_path / "fuv_detector.nc"
+    write_fuv_detector(source)
+    with Dataset(source, "r+") as nc:
+        valid = nc["wic_unsubtracted_valid"][:]
+        valid[0, 0, 0] = 0
+        nc["wic_unsubtracted_valid"][:] = valid
+
+    background = PrecipitationDetector(
+        source,
+        kp_series=kp_series(),
+        proton_energy_model="constant",
+        count_source="background_subtracted",
+    )
+    unsubtracted = PrecipitationDetector(
+        source,
+        kp_series=kp_series(),
+        proton_energy_model="constant",
+        count_source="unsubtracted",
+    )
+
+    assert background.count_source == "background_subtracted"
+    assert unsubtracted.count_source == "unsubtracted"
+    assert background.wic_valid[0, 0, 0]
+    assert not unsubtracted.wic_valid[0, 0, 0]
+    assert unsubtracted.method_valid.any()
+    np.testing.assert_allclose(
+        unsubtracted.method_quality_weight[unsubtracted.method_valid], 1.0
+    )
+    assert "dgweight is not used" in (
+        unsubtracted.method_quality_weight_method
+    )
+    np.testing.assert_allclose(background.Ep, unsubtracted.Ep)
+    assert not np.allclose(
+        background.wic_corrected,
+        unsubtracted.wic_corrected,
+        equal_nan=True,
+    )
+
+
 def test_missing_si13_keeps_wic_frame_but_invalidates_ratio(tmp_path):
     source = tmp_path / "fuv_detector.nc"
     write_fuv_detector(source, two_frames=True)
@@ -249,6 +289,9 @@ def test_precipitation_detector_netcdf_is_self_describing(tmp_path):
     assert ORBIT_SCRIPT.precipitation_detector_file_status(
         output, source, "constant", 2.0, 0.0
     ) == "mismatch"
+    assert ORBIT_SCRIPT.precipitation_detector_file_status(
+        output, source, "constant", 5.0, 0.5, "unsubtracted"
+    ) == "mismatch"
     assert not Path(str(output) + ".partial").exists()
 
     with Dataset(output) as nc:
@@ -256,6 +299,8 @@ def test_precipitation_detector_netcdf_is_self_describing(tmp_path):
         assert nc.representation == "detector"
         assert nc.schema_version == SCHEMA_VERSION
         assert nc.method == "image_ratio"
+        assert nc.count_source == "background_subtracted"
+        assert "dgweight" in nc.method_quality_weight_method
         assert nc.proton_flux_source == "SI12"
         assert nc.proton_energy_model == "constant"
         assert nc.source_fuv_detector == str(source)
@@ -344,6 +389,7 @@ def test_orbit_script_defaults_to_hardy_image_ratio():
     args = ORBIT_SCRIPT.parse_args([])
 
     assert args.proton_energy_model == "hardy"
+    assert args.count_source == "background_subtracted"
     assert args.workers == 1
     assert args.base_output is None
     assert ORBIT_SCRIPT.PRECIPITATION_METHOD == "image_ratio"
@@ -381,6 +427,7 @@ def test_orbit_script_supports_separate_bases_and_parallel_runs(
         "--base-input", str(base_input),
         "--base-output", str(base_output),
         "--workers", "2",
+        "--count-source", "unsubtracted",
     ])
 
     assert result == [(1, 3), (2, 3)]
@@ -388,9 +435,12 @@ def test_orbit_script_supports_separate_bases_and_parallel_runs(
     for _, settings in calls:
         assert settings["input_directory"] == input_directory
         assert settings["output_directory"] == (
-            base_output / "precipitation_detector" / "IR_hardy"
+            base_output
+            / "precipitation_detector"
+            / "IR_hardy_unsubtracted"
         )
         assert settings["proton_energy_model"] == "hardy"
+        assert settings["count_source"] == "unsubtracted"
 
 
 def test_orbit_script_rejects_invalid_worker_count():
@@ -415,5 +465,6 @@ def test_orbit_worker_reports_failed_orbit(tmp_path, monkeypatch):
             "hardy",
             2.0,
             0.0,
+            "background_subtracted",
             "test",
         )

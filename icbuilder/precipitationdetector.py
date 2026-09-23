@@ -28,6 +28,7 @@ from .fuvdetector import (
 SCHEMA_VERSION = 3
 PRECIPITATION_METHOD = "image_ratio"
 PROTON_ENERGY_MODELS = ("hardy", "constant")
+COUNT_SOURCES = ("background_subtracted", "unsubtracted")
 PROTON_FLUX_SOURCE = "SI12"
 COUNT_UNCERTAINTY_MODE = "measurement"
 PROTON_OPERATION_ORDER = (
@@ -56,6 +57,11 @@ FRAME_FIELDS = (
     "si12_source_count", "si13_source_count",
     "glat", "glon", "mlat", "mlon", "mlt", "sza", "dza",
 )
+UNSUBTRACTED_FRAME_FIELDS = (
+    "wic_unsubtracted_counts", "si12_unsubtracted_counts",
+    "si13_unsubtracted_counts", "wic_unsubtracted_valid",
+    "si12_unsubtracted_valid", "si13_unsubtracted_valid",
+)
 TIME_FIELDS = (
     "time", "wic_source_time", "si12_source_time", "si13_source_time",
     "wic_source_index", "si12_source_index", "si13_source_index", "ssalon",
@@ -66,7 +72,7 @@ TIME_FIELDS = (
 #%% Product-1 loading
 
 
-def load_fuv_detector(filename):
+def load_fuv_detector(filename, include_unsubtracted=False):
     """Load the Product-1 fields needed by detector precipitation."""
 
     filename = Path(filename)
@@ -113,6 +119,14 @@ def load_fuv_detector(filename):
         for name in FRAME_FIELDS:
             dtype = bool if name.endswith("_valid") else float
             product[name] = np.asarray(source.read(name), dtype=dtype)
+        if include_unsubtracted:
+            if int(source.attrs.get("unsubtracted_counts_stored", 0)) != 1:
+                raise ValueError(
+                    f"{filename} does not contain unsubtracted Product-1 counts"
+                )
+            for name in UNSUBTRACTED_FRAME_FIELDS:
+                dtype = bool if name.endswith("_valid") else float
+                product[name] = np.asarray(source.read(name), dtype=dtype)
 
     product.update(source_identity(filename))
     return product
@@ -183,9 +197,15 @@ class PrecipitationDetector:
         proton_energy_model="hardy",
         proton_energy=2.0,
         proton_energy_uncertainty=0.0,
+        count_source="background_subtracted",
         software_version="unrecorded experimental worktree",
     ):
-        fuv = load_fuv_detector(fuv_detector)
+        if count_source not in COUNT_SOURCES:
+            raise ValueError(f"count_source must be one of {COUNT_SOURCES}")
+        fuv = load_fuv_detector(
+            fuv_detector,
+            include_unsubtracted=count_source == "unsubtracted",
+        )
         if kp_series is None:
             kp_series = load_gfz_kp()
 
@@ -193,6 +213,7 @@ class PrecipitationDetector:
         self.representation = "detector"
         self.schema_version = SCHEMA_VERSION
         self.method = PRECIPITATION_METHOD
+        self.count_source = count_source
         self.proton_flux_source = PROTON_FLUX_SOURCE
         self.proton_energy_model = proton_energy_model
         self.proton_energy_constant = float(proton_energy)
@@ -220,6 +241,10 @@ class PrecipitationDetector:
         ):
             setattr(self, name, np.asarray(fuv[name]))
 
+        if self.count_source == "unsubtracted":
+            for name in UNSUBTRACTED_FRAME_FIELDS:
+                setattr(self, name, np.asarray(fuv[name]))
+
         # 1. Match authoritative Kp to every retained WIC frame.
         matched_kp = match_gfz_kp(self.time, kp_series)
         self.kp = matched_kp["kp"]
@@ -244,16 +269,35 @@ class PrecipitationDetector:
             self.proton_energy_coordinate_note,
         ) = proton_energy
 
-        # 3. Require all three image-ratio channels at each detector pixel.
+        # 3. Select one count stage on common Product-1 detector support.
+        if self.count_source == "background_subtracted":
+            wic_counts = self.wic_counts
+            si12_counts = self.si12_counts
+            si13_counts = self.si13_counts
+            self.method_quality_weight_method = (
+                "product of Product-1 fuvpy dgweight fields"
+            )
+        else:
+            wic_counts = self.wic_unsubtracted_counts
+            si12_counts = self.si12_unsubtracted_counts
+            si13_counts = self.si13_unsubtracted_counts
+            self.wic_valid &= self.wic_unsubtracted_valid
+            self.si12_valid &= self.si12_unsubtracted_valid
+            self.si13_valid &= self.si13_unsubtracted_valid
+            self.method_quality_weight_method = (
+                "uniform weight on successful common detector support; "
+                "background-fit dgweight is not used"
+            )
+
         input_valid = (
             self.wic_valid
             & self.si12_valid
             & self.si13_valid
             & np.isfinite(self.Ep)
         )
-        wic = np.where(input_valid, self.wic_counts, np.nan)
-        si12 = np.where(input_valid, self.si12_counts, np.nan)
-        si13 = np.where(input_valid, self.si13_counts, np.nan)
+        wic = np.where(input_valid, wic_counts, np.nan)
+        si12 = np.where(input_valid, si12_counts, np.nan)
+        si13 = np.where(input_valid, si13_counts, np.nan)
 
         # 4. Infer proton flux from mapped SI12, then correct WIC and SI13.
         dwic = np.where(input_valid, np.sqrt(self.wic_variance), np.nan)
@@ -294,12 +338,16 @@ class PrecipitationDetector:
 
         # 6. Retain input support separately from successful method output.
         self.method_valid = input_valid & np.isfinite(self.E0) & np.isfinite(self.Fe)
+        if self.count_source == "background_subtracted":
+            method_quality_weight = (
+                self.wic_quality_weight
+                * self.si12_quality_weight
+                * self.si13_quality_weight
+            )
+        else:
+            method_quality_weight = np.ones(self.shape)
         self.method_quality_weight = np.where(
-            self.method_valid,
-            self.wic_quality_weight
-            * self.si12_quality_weight
-            * self.si13_quality_weight,
-            np.nan,
+            self.method_valid, method_quality_weight, np.nan
         )
         uncertain = ~(
             np.isfinite(self.dwic_corrected)
@@ -314,6 +362,15 @@ class PrecipitationDetector:
         # Raw counts remain in the referenced Product 1 and are not duplicated
         # in Product 2 after the precipitation calculation is complete.
         del self.wic_counts, self.si12_counts, self.si13_counts
+        if self.count_source == "unsubtracted":
+            del (
+                self.wic_unsubtracted_counts,
+                self.si12_unsubtracted_counts,
+                self.si13_unsubtracted_counts,
+                self.wic_unsubtracted_valid,
+                self.si12_unsubtracted_valid,
+                self.si13_unsubtracted_valid,
+            )
 
     #%% NetCDF output
 
@@ -346,6 +403,8 @@ class PrecipitationDetector:
             nc.representation = self.representation
             nc.schema_version = self.schema_version
             nc.method = self.method
+            nc.count_source = self.count_source
+            nc.method_quality_weight_method = self.method_quality_weight_method
             nc.proton_flux_source = self.proton_flux_source
             nc.proton_energy_model = self.proton_energy_model
             nc.proton_operation_order = self.proton_operation_order
