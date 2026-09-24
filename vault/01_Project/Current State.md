@@ -1,9 +1,411 @@
 # Current State
 
-Last reviewed: 2026-09-21
-Repository snapshot: `modular_pipeline` at `23ea850`
+Last reviewed: 2026-09-24
+Repository snapshot: `modular_pipeline` at `a7d6670`
 Worktree state: regenerated example products, debugging additions, existing
 vault changes, and the implemented icReader migration are uncommitted
+
+## DMSP segment correspondence features implemented
+
+`scripts/ratio_relation_validation/segment_correspondence_features.py`
+classifies each IMAGE-frame/DMSP-satellite segment by Spearman correlation:
+negative `[-1, 0)`, weak positive `[0, 0.2)`, or positive `[0.2, 1]`.
+Undefined correlations remain explicit rather than being assigned to a class.
+The feature table includes time, circular and ordinary MLT summaries, MLAT,
+viewing geometry, matching separation, DMSP flux, sample count, RMSE, bias,
+and correlation. Old crossing files receive explicit NaN SZA placeholders;
+new files will populate the same columns without changing the table layout.
+
+The current no-flux-floor annotated run produced 764 eligible segments from
+172 orbits: 327 negative, 147 weak-positive, 218 positive, and 72 undefined.
+Both the class-wise feature grid and coloured scatter matrix completed. The
+classes overlap strongly in the currently available features. Positive
+segments have lower median log-RMSE (0.664 versus 0.791 dex for negative), as
+expected because both metrics use the same IMAGE/DMSP energy pairs. Three
+focused tests cover fixed class boundaries, midnight-safe circular MLT, and
+the NaN SZA placeholder.
+
+A variance audit confirms that the overlap dominates: the correlation class
+explains only 3.8% of log-RMSE variance and 1.1% of ordinary-keV RMSE variance;
+every other current feature explains at most 1.7%. Raw RMSE actually increases
+in median from negative to positive segments, while log-RMSE decreases. This
+is consistent with rank correlation identifying co-variation without requiring
+absolute energy agreement. The next diagnostic should test whether each
+segment correlation is distinguishable from an autocorrelation-preserving
+null before searching for additional descriptive features.
+
+The same workflow now also assigns fixed log-RMSE classes: low below 0.6 dex,
+medium from 0.6 to 0.9 dex, and high at or above 0.9 dex. The current no-floor
+sample contains 197/365/202 segments respectively. Apart from ordinary keV
+RMSE, which is another error measure, the strongest class associations are
+median DMSP flux (8.1% explained variance), DMSP energy range (7.7%),
+correlation (4.9%), and mean DZA (2.9%). Higher-RMSE segments have higher
+median flux, broader energy ranges, larger DZA, and more negative median
+correlation, although overlap remains substantial.
+
+A direct paired audit of the 416 segments available under both flux choices
+shows that the `2e11` sample-level floor reduces median samples per segment
+from 77 to 36, lowers median correlation from 0.041 to -0.024, and decreases
+correlation in 56% of segments. It improves log-RMSE in only 39%. The visually
+improved high-flux 2-D histogram therefore comes mainly from removing weak or
+off-oval samples from the plotted population, not from generally improving
+segment-level correspondence. The validation should separate oval-support
+detection from energy agreement inside a reliably auroral interval.
+
+The feature table now describes the `2e11` auroral support explicitly:
+above-threshold fraction and count, the longest contiguous high-flux run,
+entry/exit offsets from the IMAGE frame, whether the segment begins or ends
+outside, peak and run-median flux, and IMAGE/DMSP scores inside that run. A
+time gap larger than 1.5 s breaks continuity. The threshold is a command-line
+choice and is saved in every row.
+
+These features reveal that low whole-segment RMSE is often a weak-signal
+state, not necessarily good auroral agreement. Median above-threshold fraction
+rises from 0.23 in the low-RMSE class to 0.52 in the high-RMSE class; the
+longest run rises from 7 to 16 samples. Sixteen percent of low-RMSE segments
+contain no sample above `2e11`, versus 3% of high-RMSE segments. Low-RMSE
+segments also start/end outside more often. This supports separate tests for
+auroral-support detection and energy agreement within strong contiguous runs.
+Dedicated correlation- and RMSE-coloured support-feature matrices now show
+the pairwise structure, with diagonal distributions normalized separately for
+each class rather than pooled into one histogram.
+
+One transferred detector-crossing file, orbit 0136, was found to contain
+8,818 samples but only the first part of the expected variable list. The
+extractor had written directly to its final `.nc` path, so interruption could
+leave a partial file that restart logic incorrectly skipped. Detector and CS
+crossing extraction now writes through `.nc.partial` and atomically replaces
+the final path only after a successful close. Restart discovery also checks
+the completed output fields and automatically rebuilds an incomplete
+non-empty orbit. All other 650 files in the inspected local crossing directory
+passed this field check; orbit 0136 must be regenerated or recopied before the
+feature analysis can run over that directory.
+
+## Unsubtracted Product-1 and Product-2 diagnostic implemented
+
+Detector Product 1 remains schema 2 and preserves the existing meaning of
+`wic_counts`, `si12_counts`, and `si13_counts` as background-subtracted
+`dgimg`. It now additionally stores `wic_unsubtracted_counts`,
+`si12_unsubtracted_counts`, and `si13_unsubtracted_counts` from native `img`,
+plus separate `*_unsubtracted_valid` masks. SI background-subtracted and
+unsubtracted images share the exact WIC time match and footprint-overlap
+mapping. Geometry, variance, source identity, and coregistration diagnostics
+are not duplicated. Restart validation treats older files lacking the added
+fields as incomplete, so they are rebuilt without masquerading as current
+outputs.
+
+Product 2 now accepts `count_source = background_subtracted | unsubtracted`.
+The default retains its old meaning and output label. The unsubtracted branch
+uses the new Product-1 count and validity fields, the same variances and
+precipitation physics, and a uniform method weight on successful support
+instead of background-fit `dgweight`. It writes by default to
+`precipitation_detector/IR_hardy_unsubtracted` and records both the count
+source and method-weight meaning in root metadata.
+
+The DMSP extractor now retains Product-2 WIC SZA and count-source provenance.
+`ratio_validation_background_comparison.py` joins the two crossing datasets
+by exact orbit, IMAGE time, satellite, and DMSP time; applies the ordinary
+quality rules to both branches; requires common support; and plots both 2-D
+ratio/energy histograms with identical bins and scaling. Its minimum SZA now
+defaults to zero after the strict nightside cohort proved too small. It does
+not use RMSE or correlation selection.
+
+Forty-four focused Product-1/Product-2/CS and ratio-validation tests pass. The
+full suite has 138 passes and the same four known legacy 36-by-36 grid/lookup
+failures. On real orbit 0085, the new default Product 2 reproduced every prior
+scientific array exactly. The unsubtracted branch preserved time, geometry,
+source indices, Kp, and proton energy exactly while changing corrected counts,
+ratio, electron energy, and flux. Both matching runs wrote the same 3,847 keys
+and identical SZA. Orbit 0085 has SZA 62--74 degrees, so it correctly supplies
+no samples to the rejected greater-than-105-degree diagnostic but does
+participate in the unrestricted paired comparison.
+
+The first annotated detector-crossing SZA audit confirms that the large
+sample loss at `SZA >= 105` is genuine rather than a missing-data error. The
+ordinary cuts retain 50,960 samples and every one has finite WIC SZA; 3,221
+(6.32%) remain above 105 degrees. The cohort contracts from 179 orbits and
+903 frame/satellite segments to 15 orbits and 78 segments. This is the correct
+per-sample condition for the deliberately dark background-subtraction test,
+but it is too restrictive to treat silently as the default general ratio
+validation. The threshold should remain explicit in figures and output
+provenance.
+
+The user considers this 15-orbit nightside cohort inadequate for estimating
+or validating the general IMAGE ratio--energy relation. Retain it only as a
+narrow paired sensitivity test of background subtraction; do not use its
+3,221 correlated samples as though they were an independent validation
+population.
+
+Both complete transferred crossing directories now contain 651 valid orbit
+files. The next action is the exact paired comparison with minimum SZA zero;
+the standalone general ratio validation also defaults to zero.
+
+The paired comparison now renders both conditional-quantile directions:
+DMSP-energy quantiles within IMAGE-ratio bins and IMAGE-ratio quantiles within
+DMSP-energy bins. Both figures reuse the same exact paired common-support
+population, two-panel count-source layout, histogram bins, and colour scale.
+
+The current per-spacecraft nightside audit is limited to the 651 newly fetched
+SZA-enabled crossing files spanning orbits 85--904. Within that restricted
+range, the 366 quality-controlled dark segments comprise F13/F15/F12/F14
+counts of 147/125/55/39; 78 were accepted, 276 were explicitly rejected, and
+12 are absent from the annotation table. This does not describe the remaining
+727 crossing files through orbit 1930. The older complete 1,378-file crossing
+corpus lacks `wic_sza`, so the post-904 dark population is unknown until those
+orbits are refetched or augmented. Earlier references to 366 as the complete
+corpus were incorrect.
+
+## DMSP annotation migration implemented
+
+`scripts/ratio_relation_validation/annotate_dmsp_frames.py` now consumes the
+per-orbit detector crossing corpus directly. It groups the `sample` dimension
+by `image_frame` and satellite, resumes by the stable orbit/absolute-time/
+satellite key, and preserves the existing annotation CSV columns so prior
+decisions remain valid. The untouched legacy single-`matches.nc` workflow is
+archived as `annotate_dmsp_frames_legacy.py`.
+
+The optional `--minimum-sza` uses the crossing file's WIC SZA. A candidate
+with no matched sample at or above the threshold is skipped before any remote
+image access and no CSV row is written, so a later unfiltered run can still
+present it. When the option is absent, the former MLT behavior remains: a
+dayside-only candidate is stored as status 2 (deferred). Thus explicit SZA
+filtering replaces rather than stacks with the MLT proxy.
+
+`--revisit-deferred` reopens only existing status-2 entries. Existing status
+0 and 1 decisions remain completed. When a revisited candidate receives a new
+decision, its old status-2 row is replaced atomically rather than duplicated;
+quitting, failing the SZA threshold, or lacking finite matched WIC/SI13 leaves
+the old row unchanged. New candidates without a jointly finite detector-
+matched WIC/SI13 pair are also reported and skipped without writing a decision.
+
+The first live revisit exposed and then fixed a distinction missing from the
+initial implementation: unusable deferred candidates were being converted to
+status 0. That run changed 34 rows before it was stopped. They are exactly the
+34 rows dated 2026-09-24 in `data/dmsp_frame_annotations.csv`. Their status
+has been restored from 0 to 2 while retaining the current timestamps. The CSV
+again contains 22,244 status-0, 1,385 status-1, and 56,310 status-2 rows.
+
+A direct audit shows that these 34 are not evidence that detector-first lost
+measurements present in the old binned product. None of their exact image-time
+keys exists in the current `data/matches.nc`; that annotation status came from
+an earlier/different match generation. In the current products every segment
+is spatially outside both representations: minimum detector separation is
+17.8--67.6 degrees, every CS sample has `cs_inside=False`, and neither
+representation has a jointly finite matched WIC/SI13 sample. The extractor
+formerly stored temporal matches without a spatial filter. This is now fixed.
+
+`fetch_all_dmsp_crossings.py` opens compact CS Product 2 first and retains a
+DMSP sample only when it is inside `grid.ingrid()` and its frame/cell has
+positive WIC and SI13 coverage plus finite binned WIC/SI13 values. It opens the
+large detector product only if an orbit has at least one such sample.
+Scientific values still come exclusively from detector Product 2; saved CS
+row/column and sensor coverages document the gate. Existing ungated outputs
+fail restart completion and are rebuilt without requiring `--overwrite`.
+
+After the CS gate, the extractor now requires actual containment of the DMSP
+point in an inferred WIC detector-pixel quadrilateral. It reuses
+`infer_footprints` and the existing sparse footprint-to-CS mapping to restrict
+candidate polygons, then applies point-in-quadrilateral containment. No angular
+distance cutoff controls acceptance. Centre distance remains diagnostic and is
+used only to break the rare tie when approximated footprints overlap.
+
+The only addition to `icbuilder/footprints.py` is the independent
+`point_in_quadrilaterals` helper. Existing footprint inference, overlap
+mapping, and Product-1/2/3 call paths are unchanged. On real orbit 0086, the
+CS gate reduced 6,938 temporal coincidences to 3,935 covered samples and
+footprint containment retained 3,904; 31 fell outside every detector footprint.
+Two boundary points were contained by two approximated footprints and used the
+documented tie-breaker. Retained centre separations span 0.006--0.844 degrees,
+showing why distance is not an acceptance rule. Forty-eight retained samples
+lack a finite detector WIC/SI13 pair and remain explicit disagreements.
+
+The 0.844-degree maximum was audited directly. It is a unique containment at
+WIC DZA 67 degrees, close to a corner of the inferred footprint rather than
+outside it. The surrounding detector-centre spacings are 0.89--1.22 degrees,
+so the large centre separation is consistent with an enlarged limb pixel. The
+inferred quadrilateral remains an approximation and is least certain at high
+DZA; retain separation and DZA as quality diagnostics rather than silently
+turning either into a matching cutoff.
+
+Serial and two-worker orbit-0086 outputs are identical; the real two-worker
+0085/0086 run completed. Forty-seven combined footprint, CS-production,
+extractor, annotation, and validation tests pass. Existing crossing outputs
+lack the new footprint-match field and are rebuilt automatically. Rebuild the
+full crossing corpus before treating it as final validation input.
+
+Compact CS Product 2 also supplies the plotted corrected WIC/SI13 background.
+The DMSP track is projected from its crossing-file MLAT/MLT onto the CS grid,
+and the CS frame is resolved by absolute time. This avoids remote reads of
+159--431-MiB detector files for annotation in favor of roughly 10--12-MiB CS
+files. A real mounted orbit-1285 no-display gate and a visually checked orbit-
+0085 render pass.
+
+## Crossing-level RMSE ratio diagnostic implemented
+
+The canonical local detector-crossing dataset for the ratio-validation
+analyses is
+`/home/bing/Dropbox/work/temp_storage/icBuilder_pipeline_test/matched_dmsp_image_data`.
+
+`scripts/ratio_relation_validation/ratio_validation_rmse.py` is a separate
+detector analysis that scores each orbit/IMAGE-time/DMSP-satellite crossing
+against the stored Product-2 `img_energy`. It records ordinary energy RMSE,
+log10 RMSE, mean log bias, Spearman correlation, sample count, and DMSP energy
+range. Log-RMSE is the default selection metric. Crossings must have at least
+20 quality-controlled samples, and the default analysis retains the best 25%
+of eligible crossings with each crossing weighted equally when determining
+the percentile. Absolute `--maximum-rmse`, alternative keV RMSE, retained
+fraction, and minimum sample count are command-line choices.
+
+The workflow writes the complete crossing score table, an RMSE-distribution
+figure, selected-sample diagnostics, the same two conditional-quantile
+ratio/energy figures as the main detector analysis, and a binned NetCDF with
+the selection rule recorded in its attributes. The input loader now includes
+the extractor's stored `img_energy` and `img_energy_std` fields rather than
+recalculating energy from ratio. A one-orbit gate retained two of three
+eligible crossings at a 50% cutoff and produced every expected output. Two
+focused tests verify crossing-level scoring and complete-crossing selection.
+
+This subset is explicitly diagnostic rather than independent validation:
+Product-2 IMAGE energy is itself obtained from the Frey response, so selecting
+low IMAGE/DMSP RMSE will preferentially reproduce that response by design.
+
+`scripts/ratio_relation_validation/ratio_validation_correlation.py` provides
+the matched sensitivity using per-crossing Spearman correlation instead. It
+uses the same annotations, quality-selected samples, crossing definition,
+minimum sample count, stored IMAGE energy, binning, and figures as the RMSE
+version. The default retains the highest-correlation 25% of eligible
+crossings; an absolute `--minimum-correlation` is also available. Undefined
+constant-series correlations are excluded from the eligible population. The
+score CSV, binned NetCDF, correlation-distribution figure, and terminal output
+record the actual cutoff and retained population. An orbit-0086 gate and three
+focused scoring/selection tests pass.
+
+Correlation filtering is even more directly conditioned on the desired
+within-crossing association than RMSE filtering. Its resulting histogram is
+therefore a regime diagnostic, not an independent validation of Frey.
+
+The first full correlation run used `--minimum-correlation 1e-7`. This is a
+positive-correlation filter, not an effectively disabled cutoff. The ordinary
+analysis retained 50,960 quality-selected samples (43,036 inside the plotted
+bins), while the correlation run retained 25,109 samples (20,441 binned).
+Among 692 crossings with finite Spearman correlation and at least 20 samples,
+365 were positive and retained, 327 were negative and removed, and another 72
+eligible-size crossings had undefined correlation. The correlation
+distribution is nearly centred on zero (median 0.024, mean 0.017). The cleaner
+filtered histogram is therefore expected by construction and cannot establish
+the Frey relation independently.
+
+## Detector-era electron-energy model validation revived
+
+The former Zhang--Paxton/DMSP comparison no longer depends on the obsolete
+single `data/matches.nc` file. The new
+`scripts/electron_energy_model/build_energy_comparison.py` streams the current
+per-orbit detector crossing files and reduces each IMAGE-frame/satellite pair
+at 66-s and 120-s support. DMSP mean energy is calculated as
+`sum(Q) / sum(Q / E)` after the established fractional-uncertainty cuts. The
+compact output retains every crossing and attaches annotation status by
+orbit, absolute IMAGE time, and satellite.
+
+Definitive GFZ Kp is matched at IMAGE frame time. The grid-independent
+icPhysics Zhang--Paxton module is evaluated on a periodic 0.05-h MLT grid and
+the output records its area mean, area median, energy-flux-weighted energy,
+latitude-profile spread, and selected latitude interval. No absolute DMSP
+flux threshold is imposed while building the reusable data.
+
+`scripts/electron_energy_model/evaluate_energy_models.py` compares the
+historical hard-coded 2-keV electron energy, physical and log-median fitted
+constants, the original non-collapsed Zhang--Paxton model, the three raw
+collapse energies, and area-mean scaled/calibrated variants. The pointwise
+model is evaluated at every one-second DMSP MLAT/MLT position and reduced over
+each 66-s/120-s window using the same `sum(Q) / sum(Q / E)` operation as the
+DMSP observations. Complete IMAGE orbits are held out in deterministic
+year-balanced folds. The primary loss is absolute log10 energy error averaged
+first within orbit and then across orbits, with paired orbit/year bootstrap
+intervals for improvement over the log-median constant. It reports the `all`
+and manually `accepted` cohorts separately; minimum and maximum flux are
+explicit evaluation arguments.
+
+The full 1,378-file detector-crossing corpus has now been reduced to 378,924
+66-s/120-s records. At 120-s support, the no-floor common sample contains
+41,699 records from 1,374 orbits; 747 accepted records span 181 orbits. The
+`2e11 eV cm-2 sr-1 s-1` floor retains 8,765 all-cohort records and 409 accepted
+records.
+
+The first full held-out result, which omitted the hard-coded 2-keV and
+non-collapsed Zhang--Paxton models, depended strongly on cohort. Without a flux floor,
+raw Zhang--Paxton area mean is worse than the log-median constant in both
+cohorts. Scaling/calibrating the area mean improves the all-crossing 120-s
+score from 0.4204 to about 0.3906 dex, but it is indistinguishable from the
+constant on accepted crossings: 0.2564 versus 0.2570 dex, with the improvement
+interval spanning zero. Above the strong-signal floor, raw area mean and
+median improve the all-crossing score by 0.0148 and 0.0169 dex respectively,
+but neither improves the accepted-crossing score significantly. The calibrated
+accepted-crossing score is likewise indistinguishable from the constant at
+both supports. The earlier apparent high-flux Zhang--Paxton advantage therefore
+does not transfer to the manually accepted crossing cohort. These numerical
+tables and figures are now explicitly provisional until the corrected
+nine-model builder and evaluator have been rerun.
+
+`plot_energy_model_diagnostics.py` now writes sample/flux histograms, direct
+raw-collapse density plots, held-out residual histograms, and score/paired-CI
+figures. Both 66-s and 120-s figures were generated for the earlier no-floor
+and strong-flux evaluations under `figures/electron_energy_model/`; they must
+be overwritten after the corrected model set is evaluated. The builder and
+plotter changes were initially not run over the corpus at the user's request.
+
+The user subsequently rebuilt the comparison with 1-s, 66-s, and 120-s
+support, producing 568,386 records, and ran the corrected nine-model no-floor
+analysis at 1 s. Its common sample contains 41,526 all-cohort records and 724
+accepted records. On accepted crossings, the log-median constant scores
+0.4371 dex, hard-coded 2 keV scores 0.5319 dex, and pointwise Zhang--Paxton
+scores 0.6269 dex. Pointwise Zhang--Paxton has median
+`log10(DMSP/prediction) = -0.48`, corresponding to a typical prediction about
+three times too high. Scaled area-mean Zhang--Paxton is numerically lowest at
+0.4348 dex, but its +0.0023-dex improvement interval spans zero and is
+indistinguishable from the log-median constant.
+
+The accepted 1-s median flux is `1.02e11`, less than half the 120-s accepted
+median from the prior run. This supports the interpretation that an accepted
+annotation describes a satellite traversal through the aurora within the
+full matching window; the single central second need not sample its strong
+precipitation.
+
+The corrected nine-model evaluation is now complete for all three supports,
+with and without the `2e11` flux floor. On accepted crossings, pointwise
+Zhang--Paxton is decisively worse at every support: 0.6269, 0.4774, and 0.4498
+dex without the floor, and 0.3551, 0.3520, and 0.3356 dex with it. Its median
+signed residual remains negative, so it systematically overpredicts DMSP
+energy. Hard-coded 2 keV is also significantly worse than the log-median
+constant without the floor. With the flux floor it becomes statistically
+competitive with the constant, but is never the clear winner.
+
+The only accepted-cohort Zhang--Paxton improvement with a 95% interval above
+zero is the calibrated area mean at 1-s strong-flux support: 0.2985 versus
+0.3151 dex, an improvement of 0.0167 dex with interval 0.0013--0.0325. The raw
+area mean is numerically similar at 0.2976 dex but its interval crosses zero.
+The calibrated advantage disappears at 66 and 120 s. At 120-s strong-flux
+support, the log-median constant, physical constant, and calibrated collapse
+are statistically tied near 0.21 dex. Longer support consistently lowers
+absolute error, reflecting temporal averaging and better representation of
+the annotated traversal. Sixteen focused builder, Kp, and Zhang--Paxton tests
+pass.
+
+## Ohma background-subtraction diagnostic revived
+
+`scripts/paper_reconstructions/reconstruct_ohma_background_frames.py` now
+accepts one WIC, SI12, or SI13 sensor-orbit NetCDF file and writes one
+paper-style diagnostic PNG per frame. The four panels retain the Figure-5
+magnetic projection, labels, colormaps, inset color bars, and sensor-specific
+limits while showing the current coestimated result: observed image,
+`dgmodel`, `dgimg`, and `dgweight`. It reads the stored fit and does not rerun
+background subtraction. Orbit 0261 WIC is the interactive default; arbitrary
+files and output directories are command-line arguments, and repeated
+`--frame` options permit small checks instead of rendering a full orbit.
+
+Frame 120 from the local orbit-0261 WIC, SI12, and SI13 files rendered
+successfully and was visually checked. The default all-frame behavior has not
+been run during verification because it would deliberately create hundreds of
+figures.
 
 ## Detector DMSP crossing extraction implemented
 
@@ -62,6 +464,18 @@ directions. Orbits 0085 and 0086 were identical between serial and two-worker
 runs; an annotated two-orbit analysis retained 258 selected pairs and
 completed successfully.
 
+A full paired audit of the 1,378 detector and CS crossing files confirmed
+identical extraction and annotation populations: 21,457,193 temporal
+candidates and 141,176 annotation-selected samples in each representation.
+The quality-histogram populations differ after IMAGE validity: 61,348
+detector samples versus 100,896 CS samples. The main cause is finite ratio
+support (71,412 annotation-selected detector matches lack a positive finite
+ratio versus 23,809 CS matches); CS cells aggregate overlap from multiple
+detector pixels and can therefore be valid when the single nearest detector
+pixel is not. The 1-degree separation cut is inactive for detector matches
+(maximum 0.674 degrees) but removes 6,430 finite CS matches; CS median and
+95th-percentile separations are 0.680 and 1.023 degrees.
+
 The final relation is built with explicit fixed bins (50 ratio bins over
 0--150 and 40 DMSP-energy bins over 0--8 keV). The saved NetCDF contains the
 2-D counts, sample counts along both axes, DMSP-energy quantiles conditioned
@@ -87,6 +501,14 @@ as a four-frame sequence. It remaps the footprint track against each frame's
 own detector geometry and highlights that frame's centered plus-or-minus-60-s
 support. The green and red points mark the start and end of this DMSP support;
 they do not represent the WIC exposure duration.
+
+`reconstruct_coumans_figure4a_detector_ratio.py` provides the matching
+Product-2 view. It uses the canonical stored proton-corrected `R` field rather
+than recalculating WIC/SI13, retains the identical DMSP track and four-frame
+sequence, and displays ratio 0--150 with larger values explicitly saturated.
+All four orbit-0968 frames rendered successfully as PNG and PDF beneath
+`figures/paper_reconstructions/coumans_2004`; their mapped-track separations
+match the WIC reconstruction (maximum 0.233 degrees in the cited frame).
 
 `scripts/paper_reconstructions/reconstruct_coumans_figure4b_detector.py` is
 the detector-Product-2 counterpart to the older fixed-grid reconstruction. It
