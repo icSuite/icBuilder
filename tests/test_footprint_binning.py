@@ -2,7 +2,11 @@
 
 import numpy as np
 
-from icbuilder.footprints import overlap_mapping, overlap_statistics
+from icbuilder.footprints import (
+    overlap_mapping,
+    overlap_statistics,
+    point_in_quadrilaterals,
+)
 
 
 class _IdentityProjection:
@@ -38,6 +42,28 @@ def test_matching_footprints_preserve_values_and_cover_each_cell():
     np.testing.assert_allclose(spread, 0)
     np.testing.assert_array_equal(count, 1)
     np.testing.assert_allclose(coverage, 1)
+
+
+def test_point_in_quadrilaterals_includes_interior_and_boundary():
+    clockwise = np.array([
+        [0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]
+    ])
+    counter_clockwise = clockwise[::-1]
+    distant = clockwise + 2
+    polygons = np.stack([clockwise, counter_clockwise, distant])
+
+    np.testing.assert_array_equal(
+        point_in_quadrilaterals(0.5, 0.5, polygons),
+        [True, True, False],
+    )
+    np.testing.assert_array_equal(
+        point_in_quadrilaterals(0.0, 0.5, polygons),
+        [True, True, False],
+    )
+    np.testing.assert_array_equal(
+        point_in_quadrilaterals(1.5, 0.5, polygons),
+        [False, False, False],
+    )
 
 
 def test_nan_pixel_leaves_its_target_cell_uncovered():

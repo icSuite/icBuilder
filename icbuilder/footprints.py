@@ -77,6 +77,33 @@ def infer_footprints(mlat, mlt, grid):
     return corners, valid
 
 
+def point_in_quadrilaterals(x, y, quadrilaterals):
+    """Return which projected quadrilaterals contain one projected point.
+
+    Boundary points count as contained. The quadrilaterals may be clockwise
+    or counter-clockwise, but are expected to be convex as produced by
+    :func:`infer_footprints`.
+    """
+
+    quadrilaterals = np.asarray(quadrilaterals, dtype=float)
+    if quadrilaterals.size == 0:
+        return np.zeros(0, dtype=bool)
+    if quadrilaterals.ndim != 3 or quadrilaterals.shape[1:] != (4, 2):
+        raise ValueError("quadrilaterals must have shape (n, 4, 2)")
+
+    following = np.roll(quadrilaterals, -1, axis=1)
+    edges = following - quadrilaterals
+    relative = np.array([x, y]) - quadrilaterals
+    cross = edges[..., 0] * relative[..., 1] - edges[..., 1] * relative[..., 0]
+
+    edge_scale = np.max(np.sum(edges**2, axis=-1), axis=1)
+    tolerance = 1e-10 * np.maximum(edge_scale, 1)
+    clockwise = np.all(cross <= tolerance[:, None], axis=1)
+    counter_clockwise = np.all(cross >= -tolerance[:, None], axis=1)
+    finite = np.all(np.isfinite(quadrilaterals), axis=(1, 2))
+    return finite & (clockwise | counter_clockwise)
+
+
 #%% Polygon clipping
 
 def polygon_area(polygon):
