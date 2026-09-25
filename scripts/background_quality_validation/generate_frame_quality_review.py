@@ -12,6 +12,7 @@ panel location needed by the local annotation script.
 
 import argparse
 from pathlib import Path
+import re
 
 import matplotlib
 matplotlib.use("Agg")
@@ -32,15 +33,18 @@ PANEL_COLUMNS = 6
 SENSOR_SETTINGS = {
     "wic": {
         "label": "WIC", "index": "wicfiles.h5",
-        "folder": "wic_data", "reflat": True
+        "folder": "wic_data", "reflat": True,
+        "background_folder": "wic", "background_prefix": "wic"
     },
     "si12": {
         "label": "SI12", "index": "s12files.h5",
-        "folder": "s12_data", "reflat": False
+        "folder": "s12_data", "reflat": False,
+        "background_folder": "s12", "background_prefix": "s12"
     },
     "si13": {
         "label": "SI13", "index": "s13files.h5",
-        "folder": "s13_data", "reflat": False
+        "folder": "s13_data", "reflat": False,
+        "background_folder": "s13", "background_prefix": "s13"
     }
 }
 QUALITY_COLOURS = {0: "red", 1: "#e6b800", 2: "#00a651"}
@@ -104,6 +108,24 @@ def source_files_for_orbit(base, sensor, files, orbit):
     if missing:
         raise FileNotFoundError(f"Missing raw input: {missing[0]}")
     return paths
+
+
+def successful_background_orbits(background_base, sensor):
+    """Return orbits with a successfully written sensor background product."""
+
+    settings = SENSOR_SETTINGS[sensor]
+    directory = background_base / settings["background_folder"]
+    expression = re.compile(
+        rf"^{re.escape(settings['background_prefix'])}_or(\d+)\.nc$"
+    )
+    orbits = []
+    for filename in directory.glob(
+        f"{settings['background_prefix']}_or*.nc"
+    ):
+        match = expression.fullmatch(filename.name)
+        if match:
+            orbits.append(int(match.group(1)))
+    return np.unique(orbits)
 
 
 #%% Raw frame loading
@@ -302,13 +324,17 @@ def process_orbit(base, output, sensor, orbit, files, dpi=150, overwrite=False):
     return "written", manifest_file
 
 
-def rebuild_combined_manifest(output):
+def rebuild_combined_manifest(output, selected_orbits=None):
     """Combine completed per-sheet manifests after an interrupted-safe run."""
 
-    files = sorted(
-        path for sensor in SENSOR_SETTINGS
-        for path in (output / sensor).glob("or_*.csv")
-    )
+    files = []
+    for sensor in SENSOR_SETTINGS:
+        for path in sorted((output / sensor).glob("or_*.csv")):
+            if selected_orbits is not None:
+                match = re.fullmatch(r"or_(\d+)\.csv", path.name)
+                if match is None or int(match.group(1)) not in selected_orbits.get(sensor, set()):
+                    continue
+            files.append(path)
     if files:
         manifest = pd.concat(
             [pd.read_csv(filename) for filename in files], ignore_index=True
@@ -335,6 +361,13 @@ def parse_args():
         help="review-package directory; defaults to BASE_INPUT/frame_quality_review"
     )
     parser.add_argument(
+        "--background-base", type=Path,
+        help=(
+            "directory containing successful wic/s12/s13 background products; "
+            "when provided, audit only those successfully processed orbits"
+        )
+    )
+    parser.add_argument(
         "--sensor", nargs="+", choices=tuple(SENSOR_SETTINGS),
         default=list(SENSOR_SETTINGS), help="sensors to render"
     )
@@ -352,16 +385,32 @@ def main():
         if args.output is not None else base / "frame_quality_review"
     )
     output.mkdir(parents=True, exist_ok=True)
+    background_base = (
+        args.background_base.expanduser().resolve()
+        if args.background_base is not None else None
+    )
 
     summary = {"written": 0, "skipped": 0, "empty": 0, "failed": 0}
     failures = []
     selected_orbits = None if args.orbit is None else set(args.orbit)
+    manifest_orbits = {}
 
     for sensor in args.sensor:
         files = read_sensor_index(base, sensor)
-        orbits = sorted(files.orbit.unique())
+        indexed_orbits = set(files.orbit.unique())
+        orbits = indexed_orbits
+        if background_base is not None:
+            successful = set(successful_background_orbits(background_base, sensor))
+            orbits = orbits.intersection(successful)
+            print(
+                f"{SENSOR_SETTINGS[sensor]['label']}: {len(indexed_orbits)} indexed, "
+                f"{len(orbits)} successful background products",
+                flush=True
+            )
         if selected_orbits is not None:
-            orbits = [orbit for orbit in orbits if orbit in selected_orbits]
+            orbits = orbits.intersection(selected_orbits)
+        orbits = sorted(orbits)
+        manifest_orbits[sensor] = set(orbits)
 
         for position, orbit in enumerate(orbits, start=1):
             print(
@@ -383,7 +432,7 @@ def main():
                 print(f"  failed: {error}", flush=True)
             summary[status] += 1
 
-    manifest = rebuild_combined_manifest(output)
+    manifest = rebuild_combined_manifest(output, manifest_orbits)
     atomic_write_csv(
         pd.DataFrame(failures, columns=["sensor", "orbit", "error"]),
         output / "failures.csv", ["sensor", "orbit", "error"]
