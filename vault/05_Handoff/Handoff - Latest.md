@@ -1,9 +1,35 @@
 # Handoff - Latest
 
-Last updated: 2026-09-24
-Repository snapshot: `modular_pipeline` at `a7d6670`
+Last updated: 2026-09-25
+Repository snapshot: `modular_pipeline` at `d9a03c3`
 Worktree state: regenerated example products, debugging additions, existing
-vault changes, and the implemented icReader migration are uncommitted
+vault changes, and the frame-quality review workflow are uncommitted
+
+## Latest checkpoint: raw frame-quality review workflow
+
+The pre-background frame-quality audit is implemented under
+`scripts/background_quality_validation/`. The server generator reads raw IDL
+orbits serially, runs current fuvpy quality classification with the production
+quality-relevant settings, and renders the unique first and last 18 northern
+frames in a 6-by-6 sheet for each sensor/orbit. Border colour is the automatic
+0/1/2 flag. Per-sheet manifests make generation restartable and retain stable
+raw filename/timestamp identity; `manifest.csv` combines completed sheets and
+`failures.csv` reports failed reads.
+
+The local annotator needs only those PNGs and CSVs. It saves only manual
+disagreements and uncertain frames in `frame_quality_annotations.csv`, while
+`frame_quality_completed.csv` records every finished sheet. Both are updated
+after each action. Annotations are validation evidence and do not silently
+change Product 1. Seven focused tests pass, and WIC/SI12/SI13 orbit 0085 ran
+end to end with 60 manifest rows. Usage and key bindings are recorded in the
+workflow README. The full server generation and manual review remain to run.
+
+## Portfolio impact
+
+- Central update needed: No
+- No scientific conclusion, project priority, or deadline changed.
+- Next technical action: generate all server contact sheets and review them
+  locally, then use the saved exception table to evaluate the classifier.
 
 ## Latest checkpoint: segment correspondence feature analysis
 
@@ -246,6 +272,23 @@ path, `--output`, repeated `--frame`, and `--dpi` make it usable for other
 sensors and selective checks. Frame 120 rendered successfully for orbit-0261
 WIC, SI12, and SI13 and the layout was visually checked. Full-orbit rendering
 was intentionally not run during the implementation gate.
+
+Orbit 0454 frame 074 was also inspected directly through `icReader` from the
+server Product-1 file. Unsubtracted counts, background-subtracted counts, and
+their difference were plotted for all three co-registered sensors with SZA
+90/100/105-degree markers. The crescent is visible before subtraction in SI13,
+whereas the reconstructed backgrounds are smooth and contain no oval-shaped
+feature. This frame argues against the spline manufacturing the crescent by
+simple over-subtraction; a weaker sunward signal hidden under dayglow remains
+harder to rule out.
+
+`scripts/paper_reconstructions/plot_product1_background_frame.py` now makes
+that Product-1 diagnostic reusable with `--base`, `--orbit`, and `--frame-id`.
+It reads only the requested frame through `icReader`, renders filled inferred
+detector footprints, reconstructs each sensor's model as unsubtracted minus
+subtracted counts, and adds SZA, base-coordinate, Spencer-taper, SZA-line, and
+B0-knot diagnostics. The generalized command completed end to end against the
+mounted server orbit 0454 frame 074.
 
 ## Latest checkpoint: detector DMSP crossing extraction
 

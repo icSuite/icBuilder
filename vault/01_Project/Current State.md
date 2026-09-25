@@ -1,9 +1,9 @@
 # Current State
 
-Last reviewed: 2026-09-24
-Repository snapshot: `modular_pipeline` at `a7d6670`
+Last reviewed: 2026-09-25
+Repository snapshot: `modular_pipeline` at `d9a03c3`
 Worktree state: regenerated example products, debugging additions, existing
-vault changes, and the implemented icReader migration are uncommitted
+vault changes, and the frame-quality review workflow are uncommitted
 
 ## DMSP segment correspondence features implemented
 
@@ -406,6 +406,53 @@ Frame 120 from the local orbit-0261 WIC, SI12, and SI13 files rendered
 successfully and was visually checked. The default all-frame behavior has not
 been run during verification because it would deliberately create hundreds of
 figures.
+
+An additional direct Product-1 check used `icReader` on server orbit 0454,
+frame 074 (2000-12-20 20:49:51 UTC). For each co-registered sensor,
+`img` was read as unsubtracted counts, `dgimg` as background-subtracted counts,
+and `dgmodel` reconstructed as their difference. The crescent is already
+visible in unsubtracted SI13, while the reconstructed WIC/SI12/SI13 background
+fields are smooth and contain no evident crescent or oval. This frame does not
+support the simple hypothesis that spline over-subtraction created the
+crescent, although it cannot exclude subtraction of much weaker sunward
+emission hidden beneath dayglow.
+
+The direct Product-1 diagnostic is now reproducible through
+`scripts/paper_reconstructions/plot_product1_background_frame.py`. It accepts
+`--base`, `--orbit`, and `--frame-id`, reads only that frame through
+`icReader`, and writes the output path automatically unless `--output` is
+given. Detector values are rendered as filled inferred footprints rather than
+point markers. The fourth column shows SZA, the base-model coordinate
+`cos(SZA)/cos(DZA)`, and the fuvpy Spencer taper with labeled isocontours; the
+sensor panels retain SZA and B0-knot overlays. The reusable command completed
+successfully against server orbit 0454 frame 074.
+
+## Raw frame-quality validation workflow
+
+`scripts/background_quality_validation/generate_frame_quality_review.py`
+serially reads every requested raw sensor/orbit and recalculates the current
+fuvpy `frame_quality` before the background model removes quality-0/1 frames.
+It preserves the production `dzalim=75` and WIC reflattening behavior while
+omitting measurement variance and reconstructed viewing geometry, which do
+not enter the quality calculation. Each 6-by-6 PNG contains the unique first
+and last 18 northern frames; red/yellow/green borders encode automatic quality
+0/1/2. A per-sheet CSV retains source filename, timestamp, panel position, and
+classifier diagnostics. The run is serial and restartable, and rebuilds a
+combined `manifest.csv` from completed sheets.
+
+`annotate_frame_quality_review.py` reviews only the transferred PNG and CSV
+package locally. Manual exceptions and uncertain cases are keyed by sensor,
+raw source filename, and timestamp and are saved after every action. A second
+ledger records completely reviewed sheets, including those with no exception,
+so stopping and resuming cannot lose progress. The annotations do not yet
+alter Product 1 or the classifier; they are validation evidence for a later
+explicit classifier or exclusion-policy decision.
+
+Seven focused tests cover edge selection, sheet/manifest construction, click
+mapping, exception semantics, and durable state. A real orbit-0085 smoke test
+completed for WIC, SI12, and SI13 and produced 60 manifest rows without
+duplicate short-orbit frames. The next action is the full server generation,
+followed by local review of the transferred package.
 
 ## Detector DMSP crossing extraction implemented
 
