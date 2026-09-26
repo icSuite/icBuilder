@@ -13,6 +13,7 @@ from icphysics import (
     proton_correct_images,
 )
 from netCDF4 import Dataset, date2num
+from scipy.ndimage import convolve
 
 from .kp import load_gfz_kp, match_gfz_kp
 from .fuvdetector import (
@@ -29,6 +30,7 @@ SCHEMA_VERSION = 3
 PRECIPITATION_METHOD = "image_ratio"
 PROTON_ENERGY_MODELS = ("hardy", "constant")
 COUNT_SOURCES = ("background_subtracted", "unsubtracted")
+SPATIAL_SMOOTHING_KERNELS = ("none", "gaussian", "boxcar")
 PROTON_FLUX_SOURCE = "SI12"
 COUNT_UNCERTAINTY_MODE = "measurement"
 PROTON_OPERATION_ORDER = (
@@ -45,6 +47,14 @@ COUNT_UNCERTAINTY_METHOD = (
 HARDY_COORDINATE_NOTE = (
     "Hardy corrected geomagnetic coordinates approximated by Product-1 "
     "Modified Apex latitude and MLT at 130 km"
+)
+SPATIAL_SMOOTHING_ORDER = (
+    "WIC and SI13 are smoothed independently on their Product-1 valid "
+    "support after count-source selection and before SI12 proton correction"
+)
+SPATIAL_SMOOTHING_VARIANCE_METHOD = (
+    "independent-pixel input variances propagated with squared normalized "
+    "spatial-kernel weights; smoothing-induced output covariance is not stored"
 )
 
 
@@ -184,6 +194,108 @@ def make_detector_proton_energy(
     return Ep_model, Ep, dEp, clipping_flag, uncertainty_method, coordinate_note
 
 
+#%% Diagnostic spatial smoothing
+
+def resolve_smoothing_configuration(kernel, wic_width=None, si13_width=None):
+    """Validate smoothing settings and supply method-specific defaults."""
+
+    if kernel not in SPATIAL_SMOOTHING_KERNELS:
+        raise ValueError(
+            f"spatial_smoothing_kernel must be one of {SPATIAL_SMOOTHING_KERNELS}"
+        )
+
+    if kernel == "none":
+        supplied = [width for width in (wic_width, si13_width) if width is not None]
+        if any(float(width) != 0 for width in supplied):
+            raise ValueError("smoothing widths require gaussian or boxcar smoothing")
+        return 0.0, 0.0
+
+    default = 1.0 if kernel == "gaussian" else 3.0
+    widths = [default if width is None else float(width) for width in (wic_width, si13_width)]
+    if any(not np.isfinite(width) or width <= 0 for width in widths):
+        raise ValueError("smoothing widths must be positive and finite")
+    if kernel == "boxcar" and any(
+        not width.is_integer() or int(width) % 2 != 1 for width in widths
+    ):
+        raise ValueError("boxcar smoothing widths must be positive odd integers")
+    return tuple(widths)
+
+
+def spatial_smoothing_kernel(kernel, width):
+    """Return one normalized two-dimensional diagnostic smoothing kernel."""
+
+    if kernel == "gaussian":
+        radius = max(1, int(np.ceil(4 * width)))
+        coordinate = np.arange(-radius, radius + 1, dtype=float)
+        row, column = np.meshgrid(coordinate, coordinate, indexing="ij")
+        weights = np.exp(-(row**2 + column**2) / (2 * width**2))
+    elif kernel == "boxcar":
+        weights = np.ones((int(width), int(width)), dtype=float)
+    else:
+        raise ValueError("a spatial kernel is only defined for gaussian or boxcar")
+    return weights / np.sum(weights)
+
+
+def smooth_detector_counts(counts, variance, valid, kernel, width):
+    """Smooth detector frames and propagate independent-pixel variances."""
+
+    counts = np.asarray(counts, dtype=float)
+    variance = np.asarray(variance, dtype=float)
+    valid = np.asarray(valid, dtype=bool)
+    if counts.shape != variance.shape or counts.shape != valid.shape:
+        raise ValueError("counts, variance, and valid must have the same shape")
+    if counts.ndim != 3:
+        raise ValueError("detector smoothing expects time, row, column arrays")
+
+    weights = spatial_smoothing_kernel(kernel, width)
+    smoothed = np.full(counts.shape, np.nan)
+    smoothed_variance = np.full(counts.shape, np.nan)
+    smoothed_valid = np.zeros(counts.shape, dtype=bool)
+
+    for frame in range(counts.shape[0]):
+        count_valid = valid[frame] & np.isfinite(counts[frame])
+        normalization = convolve(
+            count_valid.astype(float), weights, mode="constant", cval=0.0
+        )
+        numerator = convolve(
+            np.where(count_valid, counts[frame], 0.0),
+            weights,
+            mode="constant",
+            cval=0.0,
+        )
+        output_valid = count_valid & (normalization > 0)
+        smoothed[frame] = np.divide(
+            numerator,
+            normalization,
+            out=np.full(counts.shape[1:], np.nan),
+            where=output_valid,
+        )
+
+        variance_valid = count_valid & np.isfinite(variance[frame])
+        missing_variance_weight = convolve(
+            (count_valid & ~variance_valid).astype(float),
+            weights,
+            mode="constant",
+            cval=0.0,
+        )
+        variance_numerator = convolve(
+            np.where(variance_valid, variance[frame], 0.0),
+            weights**2,
+            mode="constant",
+            cval=0.0,
+        )
+        uncertainty_valid = output_valid & (missing_variance_weight < 1e-12)
+        smoothed_variance[frame] = np.divide(
+            variance_numerator,
+            normalization**2,
+            out=np.full(counts.shape[1:], np.nan),
+            where=uncertainty_valid,
+        )
+        smoothed_valid[frame] = output_valid
+
+    return smoothed, smoothed_variance, smoothed_valid
+
+
 #%% Detector precipitation
 
 class PrecipitationDetector:
@@ -198,6 +310,9 @@ class PrecipitationDetector:
         proton_energy=2.0,
         proton_energy_uncertainty=0.0,
         count_source="background_subtracted",
+        spatial_smoothing_kernel="none",
+        wic_smoothing_width=None,
+        si13_smoothing_width=None,
         software_version="unrecorded experimental worktree",
     ):
         if count_source not in COUNT_SOURCES:
@@ -223,6 +338,32 @@ class PrecipitationDetector:
         self.proton_operation_order = PROTON_OPERATION_ORDER
         self.count_uncertainty_mode = COUNT_UNCERTAINTY_MODE
         self.count_uncertainty_method = COUNT_UNCERTAINTY_METHOD
+        smoothing_widths = resolve_smoothing_configuration(
+            spatial_smoothing_kernel,
+            wic_smoothing_width,
+            si13_smoothing_width,
+        )
+        self.spatial_smoothing_kernel = spatial_smoothing_kernel
+        self.wic_smoothing_width_pixels = smoothing_widths[0]
+        self.si13_smoothing_width_pixels = smoothing_widths[1]
+        if self.spatial_smoothing_kernel == "gaussian":
+            self.spatial_smoothing_width_definition = (
+                "Gaussian sigma in native WIC detector pixels"
+            )
+        elif self.spatial_smoothing_kernel == "boxcar":
+            self.spatial_smoothing_width_definition = (
+                "odd square side length in native WIC detector pixels"
+            )
+        else:
+            self.spatial_smoothing_width_definition = "not applicable"
+        self.spatial_smoothing_operation_order = SPATIAL_SMOOTHING_ORDER
+        self.spatial_smoothing_variance_method = (
+            SPATIAL_SMOOTHING_VARIANCE_METHOD
+        )
+        if self.spatial_smoothing_kernel != "none":
+            self.count_uncertainty_method += (
+                "; " + self.spatial_smoothing_variance_method
+            )
         self.software_version = str(software_version)
         self.source_fuv_detector = fuv["source_file"]
         self.source_fuv_detector_sha256 = fuv["source_sha256"]
@@ -289,10 +430,37 @@ class PrecipitationDetector:
                 "background-fit dgweight is not used"
             )
 
+        wic_method_valid = self.wic_valid
+        si13_method_valid = self.si13_valid
+        wic_variance = self.wic_variance
+        si13_variance = self.si13_variance
+
+        if self.spatial_smoothing_kernel != "none":
+            smoothed = smooth_detector_counts(
+                wic_counts,
+                self.wic_variance,
+                self.wic_valid,
+                self.spatial_smoothing_kernel,
+                self.wic_smoothing_width_pixels,
+            )
+            self.wic_smoothed, wic_variance, wic_method_valid = smoothed
+            smoothed = smooth_detector_counts(
+                si13_counts,
+                self.si13_variance,
+                self.si13_valid,
+                self.spatial_smoothing_kernel,
+                self.si13_smoothing_width_pixels,
+            )
+            self.si13_smoothed, si13_variance, si13_method_valid = smoothed
+            self.dwic_smoothed = np.sqrt(wic_variance)
+            self.dsi13_smoothed = np.sqrt(si13_variance)
+            wic_counts = self.wic_smoothed
+            si13_counts = self.si13_smoothed
+
         input_valid = (
-            self.wic_valid
+            wic_method_valid
             & self.si12_valid
-            & self.si13_valid
+            & si13_method_valid
             & np.isfinite(self.Ep)
         )
         wic = np.where(input_valid, wic_counts, np.nan)
@@ -300,9 +468,11 @@ class PrecipitationDetector:
         si13 = np.where(input_valid, si13_counts, np.nan)
 
         # 4. Infer proton flux from mapped SI12, then correct WIC and SI13.
-        dwic = np.where(input_valid, np.sqrt(self.wic_variance), np.nan)
+        dwic = np.where(input_valid, np.sqrt(wic_variance), np.nan)
         dsi12 = np.where(input_valid, np.sqrt(self.si12_variance), np.nan)
-        dsi13 = np.where(input_valid, np.sqrt(self.si13_variance), np.nan)
+        dsi13 = np.where(input_valid, np.sqrt(si13_variance), np.nan)
+        self.si12 = si12
+        self.dsi12 = dsi12
         with np.errstate(divide="ignore", invalid="ignore"):
             corrected = proton_correct_images(
                 wic=wic,
@@ -414,6 +584,18 @@ class PrecipitationDetector:
             nc.proton_energy_coordinate_note = self.proton_energy_coordinate_note
             nc.count_uncertainty_mode = self.count_uncertainty_mode
             nc.count_uncertainty_method = self.count_uncertainty_method
+            nc.spatial_smoothing_kernel = self.spatial_smoothing_kernel
+            nc.wic_smoothing_width_pixels = self.wic_smoothing_width_pixels
+            nc.si13_smoothing_width_pixels = self.si13_smoothing_width_pixels
+            nc.spatial_smoothing_width_definition = (
+                self.spatial_smoothing_width_definition
+            )
+            nc.spatial_smoothing_operation_order = (
+                self.spatial_smoothing_operation_order
+            )
+            nc.spatial_smoothing_variance_method = (
+                self.spatial_smoothing_variance_method
+            )
             nc.proton_response_energy_min = PROTON_RESPONSE_ENERGY_RANGE[0]
             nc.proton_response_energy_max = PROTON_RESPONSE_ENERGY_RANGE[1]
             nc.source_fuv_detector = self.source_fuv_detector
@@ -510,6 +692,8 @@ class PrecipitationDetector:
                 "dEp": (self.dEp, "keV"),
                 "Fp": (self.Fp, "mW m-2"),
                 "dFp": (self.dFp, "mW m-2"),
+                "si12": (self.si12, "counts"),
+                "dsi12": (self.dsi12, "counts"),
                 "wic_corrected": (self.wic_corrected, "counts"),
                 "dwic_corrected": (self.dwic_corrected, "counts"),
                 "si13_corrected": (self.si13_corrected, "counts"),
@@ -522,6 +706,13 @@ class PrecipitationDetector:
                 "dFe": (self.dFe, "mW m-2"),
                 "varE0Fe": (self.varE0Fe, "keV mW m-2"),
             }
+            if self.spatial_smoothing_kernel != "none":
+                fields.update({
+                    "wic_smoothed": (self.wic_smoothed, "counts"),
+                    "dwic_smoothed": (self.dwic_smoothed, "counts"),
+                    "si13_smoothed": (self.si13_smoothed, "counts"),
+                    "dsi13_smoothed": (self.dsi13_smoothed, "counts"),
+                })
             for name, (values, units) in fields.items():
                 dtype = "f8" if name in ("glat", "glon", "mlat", "mlon", "mlt") else "f4"
                 variable = nc.createVariable(name, dtype, dimensions, zlib=True)

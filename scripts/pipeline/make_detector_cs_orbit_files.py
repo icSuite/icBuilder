@@ -57,6 +57,8 @@ def precipitation_cs_file_status(filename, source_precipitation):
             )
             if status != "complete":
                 return status
+            if not hasattr(product, "si12") or not hasattr(product, "dsi12"):
+                return "invalid"
             if (
                 product.source_precipitation_detector
                 != str(source_precipitation)

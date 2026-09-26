@@ -21,7 +21,9 @@ from icbuilder.precipitationdetector import (
     PROTON_ENERGY_MODELS,
     SCHEMA_VERSION,
     SOURCE_TIME_DECODING,
+    SPATIAL_SMOOTHING_KERNELS,
     PrecipitationDetector,
+    resolve_smoothing_configuration,
 )
 
 
@@ -34,6 +36,9 @@ def precipitation_detector_file_status(
     proton_energy,
     proton_energy_uncertainty,
     count_source="background_subtracted",
+    spatial_smoothing_kernel="none",
+    wic_smoothing_width=0.0,
+    si13_smoothing_width=0.0,
 ):
     """Return missing, invalid, mismatch, or complete for one Product-2 file."""
 
@@ -57,11 +62,27 @@ def precipitation_detector_file_status(
                 or product.attrs.get(
                     "count_source", "background_subtracted"
                 ) != count_source
+                or product.attrs.get(
+                    "spatial_smoothing_kernel", "none"
+                ) != spatial_smoothing_kernel
+            ):
+                return "mismatch"
+            product_wic_width = float(
+                product.attrs.get("wic_smoothing_width_pixels", 0.0)
+            )
+            product_si13_width = float(
+                product.attrs.get("si13_smoothing_width_pixels", 0.0)
+            )
+            if (
+                not np.isclose(product_wic_width, wic_smoothing_width)
+                or not np.isclose(product_si13_width, si13_smoothing_width)
             ):
                 return "mismatch"
             if (
                 product.source_fuv_detector_time_decoding != SOURCE_TIME_DECODING
                 or product.count_uncertainty_mode != COUNT_UNCERTAINTY_MODE
+                or not hasattr(product, "si12")
+                or not hasattr(product, "dsi12")
             ):
                 return "invalid"
             if proton_energy_model == "constant" and (
@@ -92,6 +113,9 @@ def save_precipitation_detector(product, filename):
             product.proton_energy_constant,
             product.proton_energy_uncertainty_constant,
             product.count_source,
+            product.spatial_smoothing_kernel,
+            product.wic_smoothing_width_pixels,
+            product.si13_smoothing_width_pixels,
         )
         if status != "complete":
             raise RuntimeError(f"incomplete precipitation_detector file: {partial}")
@@ -147,6 +171,9 @@ def process_orbit(
     proton_energy_uncertainty,
     count_source,
     software_version,
+    spatial_smoothing_kernel="none",
+    wic_smoothing_width=0.0,
+    si13_smoothing_width=0.0,
 ):
     """Calculate and save one detector-space precipitation orbit."""
 
@@ -159,6 +186,9 @@ def process_orbit(
             proton_energy=proton_energy,
             proton_energy_uncertainty=proton_energy_uncertainty,
             count_source=count_source,
+            spatial_smoothing_kernel=spatial_smoothing_kernel,
+            wic_smoothing_width=wic_smoothing_width,
+            si13_smoothing_width=si13_smoothing_width,
             software_version=software_version,
         )
         output = output_directory / f"or_{orbit:04d}.nc"
@@ -195,7 +225,10 @@ def parse_args(argv=None):
     parser.add_argument("--output-folder", default="precipitation_detector")
     parser.add_argument(
         "--retrieval-label",
-        help="output subfolder; defaults to IR_<proton-energy-model>",
+        help=(
+            "output subfolder; otherwise derived from proton model, count "
+            "source, smoothing kernel, and widths"
+        ),
     )
     parser.add_argument("--orbit", action="append", type=int)
     parser.add_argument(
@@ -215,6 +248,31 @@ def parse_args(argv=None):
         help="Product-1 count stage (default: background_subtracted).",
     )
     parser.add_argument(
+        "--spatial-smoothing-kernel",
+        choices=SPATIAL_SMOOTHING_KERNELS,
+        default="none",
+        help=(
+            "Diagnostic WIC/SI13 smoothing before proton correction "
+            "(default: none)."
+        ),
+    )
+    parser.add_argument(
+        "--wic-smoothing-width",
+        type=float,
+        help=(
+            "WIC Gaussian sigma or odd boxcar side width in WIC pixels; "
+            "defaults to 1 for Gaussian and 3 for boxcar."
+        ),
+    )
+    parser.add_argument(
+        "--si13-smoothing-width",
+        type=float,
+        help=(
+            "SI13 Gaussian sigma or odd boxcar side width in WIC pixels; "
+            "defaults to 1 for Gaussian and 3 for boxcar."
+        ),
+    )
+    parser.add_argument(
         "--workers", type=int, default=1,
         help="Number of orbit workers; 1 runs serially (default: 1).",
     )
@@ -226,6 +284,12 @@ def main(argv=None):
     args = parse_args(argv)
     if args.workers < 1:
         raise ValueError("workers must be at least 1")
+    smoothing_widths = resolve_smoothing_configuration(
+        args.spatial_smoothing_kernel,
+        args.wic_smoothing_width,
+        args.si13_smoothing_width,
+    )
+    wic_smoothing_width, si13_smoothing_width = smoothing_widths
 
     base_input = args.base_input.expanduser()
     base_output = (
@@ -234,12 +298,23 @@ def main(argv=None):
     )
     input_directory = base_input / args.input_folder
     if args.retrieval_label is None:
-        suffix = (
+        count_suffix = (
             ""
             if args.count_source == "background_subtracted"
             else "_unsubtracted"
         )
-        retrieval_label = f"IR_{args.proton_energy_model}{suffix}"
+        if args.spatial_smoothing_kernel == "none":
+            smoothing_suffix = ""
+        else:
+            wic_label = str(wic_smoothing_width).replace(".", "p")
+            si13_label = str(si13_smoothing_width).replace(".", "p")
+            smoothing_suffix = (
+                f"_smooth_{args.spatial_smoothing_kernel}"
+                f"_wic{wic_label}_si13{si13_label}"
+            )
+        retrieval_label = (
+            f"IR_{args.proton_energy_model}{count_suffix}{smoothing_suffix}"
+        )
     else:
         retrieval_label = args.retrieval_label
     output_directory = base_output / args.output_folder / retrieval_label
@@ -265,6 +340,9 @@ def main(argv=None):
             args.proton_energy,
             args.proton_energy_uncertainty,
             args.count_source,
+            args.spatial_smoothing_kernel,
+            wic_smoothing_width,
+            si13_smoothing_width,
         )
         if status == "mismatch":
             raise ValueError(
@@ -294,6 +372,9 @@ def main(argv=None):
         proton_energy=args.proton_energy,
         proton_energy_uncertainty=args.proton_energy_uncertainty,
         count_source=args.count_source,
+        spatial_smoothing_kernel=args.spatial_smoothing_kernel,
+        wic_smoothing_width=wic_smoothing_width,
+        si13_smoothing_width=si13_smoothing_width,
         software_version=software_version,
     )
     if args.workers > 1:

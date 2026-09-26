@@ -16,6 +16,7 @@ from icbuilder.precipitationdetector import (
     COUNT_UNCERTAINTY_MODE,
     PrecipitationDetector,
     SCHEMA_VERSION,
+    smooth_detector_counts,
 )
 
 
@@ -129,6 +130,8 @@ def test_image_ratio_runs_on_product1_detector_geometry(tmp_path):
     assert np.isfinite(
         precipitation.dwic_corrected[precipitation.method_valid]
     ).all()
+    assert np.isfinite(precipitation.si12[precipitation.method_valid]).all()
+    assert np.isfinite(precipitation.dsi12[precipitation.method_valid]).all()
     assert precipitation.count_uncertainty_mode == "measurement"
 
     expected_weight = (
@@ -266,6 +269,107 @@ def test_hardy_energy_uses_each_detector_pixels_mlat_and_mlt(tmp_path):
     assert "approximated" in precipitation.proton_energy_coordinate_note
 
 
+def test_boxcar_smoothing_preserves_counts_and_propagates_variance():
+    counts = np.full((1, 5, 5), 10.0)
+    variance = np.full((1, 5, 5), 9.0)
+    valid = np.ones((1, 5, 5), dtype=bool)
+    valid[0, 0, 0] = False
+
+    smoothed, smoothed_variance, smoothed_valid = smooth_detector_counts(
+        counts, variance, valid, "boxcar", 3
+    )
+
+    np.testing.assert_allclose(smoothed[smoothed_valid], 10.0)
+    assert not smoothed_valid[0, 0, 0]
+    assert np.isnan(smoothed[0, 0, 0])
+    np.testing.assert_allclose(smoothed_variance[0, 2, 2], 1.0)
+
+
+def test_gaussian_smoothing_is_applied_before_proton_correction(tmp_path):
+    source = tmp_path / "fuv_detector.nc"
+    write_fuv_detector(source)
+    with Dataset(source, "r+") as nc:
+        counts = nc["wic_counts"][:]
+        valid = nc["wic_valid"][:].astype(bool)
+        location = np.argwhere(valid)[len(np.argwhere(valid)) // 2]
+        counts[tuple(location)] += 500.0
+        nc["wic_counts"][:] = counts
+
+    baseline = PrecipitationDetector(
+        source,
+        kp_series=kp_series(),
+        proton_energy_model="constant",
+    )
+    smoothed = PrecipitationDetector(
+        source,
+        kp_series=kp_series(),
+        proton_energy_model="constant",
+        spatial_smoothing_kernel="gaussian",
+        wic_smoothing_width=0.8,
+        si13_smoothing_width=1.2,
+    )
+
+    assert smoothed.spatial_smoothing_kernel == "gaussian"
+    assert smoothed.wic_smoothing_width_pixels == 0.8
+    assert smoothed.si13_smoothing_width_pixels == 1.2
+    assert hasattr(smoothed, "wic_smoothed")
+    assert hasattr(smoothed, "si13_smoothed")
+    assert not np.allclose(
+        baseline.wic_corrected,
+        smoothed.wic_corrected,
+        equal_nan=True,
+    )
+    overlap = np.isfinite(smoothed.dwic_smoothed) & smoothed.wic_valid
+    assert np.all(smoothed.dwic_smoothed[overlap] < 2.0)
+
+    output = tmp_path / "smoothed_precipitation.nc"
+    ORBIT_SCRIPT.save_precipitation_detector(smoothed, output)
+    assert ORBIT_SCRIPT.precipitation_detector_file_status(
+        output,
+        source,
+        "constant",
+        2.0,
+        0.0,
+        "background_subtracted",
+        "gaussian",
+        0.8,
+        1.2,
+    ) == "complete"
+    assert ORBIT_SCRIPT.precipitation_detector_file_status(
+        output,
+        source,
+        "constant",
+        2.0,
+        0.0,
+        "background_subtracted",
+        "gaussian",
+        1.0,
+        1.0,
+    ) == "mismatch"
+    with Dataset(output) as nc:
+        assert nc.spatial_smoothing_kernel == "gaussian"
+        assert nc.wic_smoothing_width_pixels == 0.8
+        assert nc.si13_smoothing_width_pixels == 1.2
+        assert {
+            "wic_smoothed", "dwic_smoothed",
+            "si13_smoothed", "dsi13_smoothed",
+        } <= set(nc.variables)
+
+
+def test_smoothing_configuration_rejects_invalid_boxcar_width(tmp_path):
+    source = tmp_path / "fuv_detector.nc"
+    write_fuv_detector(source)
+
+    with pytest.raises(ValueError, match="positive odd integers"):
+        PrecipitationDetector(
+            source,
+            kp_series=kp_series(),
+            spatial_smoothing_kernel="boxcar",
+            wic_smoothing_width=2,
+            si13_smoothing_width=3,
+        )
+
+
 #%% NetCDF and restart boundary
 
 def test_precipitation_detector_netcdf_is_self_describing(tmp_path):
@@ -330,6 +434,7 @@ def test_precipitation_detector_netcdf_is_self_describing(tmp_path):
             "wic_valid", "si12_valid", "si13_valid", "method_valid",
             "si12_source_count", "si13_source_count",
             "Ep_model", "Ep", "dEp", "Ep_clipping_flag", "Fp", "dFp",
+            "si12", "dsi12",
             "wic_corrected", "dwic_corrected",
             "si13_corrected", "dsi13_corrected",
             "R", "dR", "E0", "dE0", "Fe", "dFe", "varE0Fe",
@@ -428,6 +533,9 @@ def test_orbit_script_supports_separate_bases_and_parallel_runs(
         "--base-output", str(base_output),
         "--workers", "2",
         "--count-source", "unsubtracted",
+        "--spatial-smoothing-kernel", "gaussian",
+        "--wic-smoothing-width", "0.8",
+        "--si13-smoothing-width", "1.2",
     ])
 
     assert result == [(1, 3), (2, 3)]
@@ -437,10 +545,13 @@ def test_orbit_script_supports_separate_bases_and_parallel_runs(
         assert settings["output_directory"] == (
             base_output
             / "precipitation_detector"
-            / "IR_hardy_unsubtracted"
+            / "IR_hardy_unsubtracted_smooth_gaussian_wic0p8_si131p2"
         )
         assert settings["proton_energy_model"] == "hardy"
         assert settings["count_source"] == "unsubtracted"
+        assert settings["spatial_smoothing_kernel"] == "gaussian"
+        assert settings["wic_smoothing_width"] == 0.8
+        assert settings["si13_smoothing_width"] == 1.2
 
 
 def test_orbit_script_rejects_invalid_worker_count():

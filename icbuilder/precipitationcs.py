@@ -41,6 +41,7 @@ MEAN_FIELDS = {
     "Ep_model": "keV",
     "Ep": "keV",
     "Fp": "mW m-2",
+    "si12": "counts",
     "wic_corrected": "counts",
     "si13_corrected": "counts",
     "R": "1",
@@ -50,6 +51,7 @@ MEAN_FIELDS = {
 UNCERTAINTY_FIELDS = {
     "dEp": "keV",
     "dFp": "mW m-2",
+    "dsi12": "counts",
     "dwic_corrected": "counts",
     "dsi13_corrected": "counts",
     "dR": "1",
@@ -108,6 +110,19 @@ class PrecipitationCS:
         self.time_fields = read_common_time_fields(source)
 
         self.method = source.method
+        self.count_source = source.count_source
+        self.spatial_smoothing_kernel = source.spatial_smoothing_kernel
+        self.wic_smoothing_width_pixels = source.wic_smoothing_width_pixels
+        self.si13_smoothing_width_pixels = source.si13_smoothing_width_pixels
+        self.spatial_smoothing_width_definition = source.attrs.get(
+            "spatial_smoothing_width_definition", "not applicable"
+        )
+        self.spatial_smoothing_operation_order = source.attrs.get(
+            "spatial_smoothing_operation_order", "not applicable"
+        )
+        self.spatial_smoothing_variance_method = source.attrs.get(
+            "spatial_smoothing_variance_method", "not applicable"
+        )
         self.proton_flux_source = source.proton_flux_source
         self.proton_energy_model = source.proton_energy_model
         self.proton_energy_uncertainty_method = (
@@ -290,6 +305,19 @@ class PrecipitationCS:
             nc.binning_method = BINNING_METHOD
             nc.uncertainty_method = UNCERTAINTY_METHOD
             nc.method = self.method
+            nc.count_source = self.count_source
+            nc.spatial_smoothing_kernel = self.spatial_smoothing_kernel
+            nc.wic_smoothing_width_pixels = self.wic_smoothing_width_pixels
+            nc.si13_smoothing_width_pixels = self.si13_smoothing_width_pixels
+            nc.spatial_smoothing_width_definition = (
+                self.spatial_smoothing_width_definition
+            )
+            nc.spatial_smoothing_operation_order = (
+                self.spatial_smoothing_operation_order
+            )
+            nc.spatial_smoothing_variance_method = (
+                self.spatial_smoothing_variance_method
+            )
             nc.proton_flux_source = self.proton_flux_source
             nc.proton_energy_model = self.proton_energy_model
             nc.proton_energy_uncertainty_method = (

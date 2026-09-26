@@ -156,6 +156,10 @@ def test_paired_products_share_mapping_and_round_trip(tmp_path, monkeypatch):
     )
     assert precipitation.method_valid.any()
     assert conductance.conductance_valid.any()
+    assert np.isfinite(precipitation.si12[precipitation.method_valid]).all()
+    assert np.isfinite(precipitation.dsi12[precipitation.method_valid]).all()
+    assert precipitation.count_source == "background_subtracted"
+    assert precipitation.spatial_smoothing_kernel == "none"
 
     recalculated = robinson_conductance(
         conductance.E0,
@@ -186,6 +190,11 @@ def test_paired_products_share_mapping_and_round_trip(tmp_path, monkeypatch):
         assert nc.variables["P"].shape == (2, 46, 46)
         assert "not recalculated" in nc.nonlinear_ordering
         assert nc.groups["grid"].variables["mlat"].shape == (46, 46)
+    with Dataset(precipitation_output) as nc:
+        assert nc.variables["si12"].shape == (2, 46, 46)
+        assert nc.variables["dsi12"].shape == (2, 46, 46)
+        assert nc.count_source == "background_subtracted"
+        assert nc.spatial_smoothing_kernel == "none"
 
 
 def test_paired_reduction_reads_each_detector_cube_once(tmp_path, monkeypatch):
