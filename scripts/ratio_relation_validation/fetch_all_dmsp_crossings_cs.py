@@ -18,6 +18,7 @@ from fetch_all_dmsp_crossings import (
     SUPPORT_SECONDS,
     index_dmsp_files,
     load_dmsp,
+    output_is_complete,
     save_orbit,
     unit_vectors,
 )
@@ -46,10 +47,13 @@ IMAGE_FIELDS = {
     "dR": "img_ratio_std",
     "E0": "img_energy",
     "dE0": "img_energy_std",
+    "sza": "wic_sza",
     "dza": "wic_dza",
     "method_quality_weight": "quality_weight",
     "method_valid": "method_valid",
 }
+
+OUTPUT_FIELDS = set(IMAGE_FIELDS.values()) | {"orbit", "wic_source_index"}
 
 
 #%% Fixed-grid matching
@@ -279,7 +283,7 @@ def main():
     for image_file in image_files:
         orbit = int(image_file.stem.split("_")[-1])
         output_file = args.output_path / f"or_{orbit:04d}.nc"
-        if output_file.exists() and not args.overwrite:
+        if output_is_complete(output_file, OUTPUT_FIELDS) and not args.overwrite:
             continue
         tasks.append((image_file, args.output_path))
 
