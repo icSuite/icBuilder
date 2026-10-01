@@ -15,13 +15,17 @@ from tqdm.contrib.concurrent import process_map
 
 from icbuilder.kp import load_gfz_kp
 from icbuilder.precipitationdetector import (
+    BACKGROUND_QUALITY_WEIGHT_METHOD,
     COUNT_SOURCES,
     COUNT_UNCERTAINTY_MODE,
+    DEFAULT_SI12_SMOOTHING_WIDTH,
+    DEFAULT_SI13_SMOOTHING_WIDTH,
+    DEFAULT_WIC_SMOOTHING_WIDTH,
     PRECIPITATION_METHOD,
     PROTON_ENERGY_MODELS,
     SCHEMA_VERSION,
     SOURCE_TIME_DECODING,
-    SPATIAL_SMOOTHING_KERNELS,
+    UNSUBTRACTED_QUALITY_WEIGHT_METHOD,
     PrecipitationDetector,
     resolve_smoothing_configuration,
 )
@@ -36,9 +40,10 @@ def precipitation_detector_file_status(
     proton_energy,
     proton_energy_uncertainty,
     count_source="background_subtracted",
-    spatial_smoothing_kernel="none",
-    wic_smoothing_width=0.0,
-    si13_smoothing_width=0.0,
+    smoothed=True,
+    wic_smoothing_width=DEFAULT_WIC_SMOOTHING_WIDTH,
+    si12_smoothing_width=DEFAULT_SI12_SMOOTHING_WIDTH,
+    si13_smoothing_width=DEFAULT_SI13_SMOOTHING_WIDTH,
 ):
     """Return missing, invalid, mismatch, or complete for one Product-2 file."""
 
@@ -62,22 +67,34 @@ def precipitation_detector_file_status(
                 or product.attrs.get(
                     "count_source", "background_subtracted"
                 ) != count_source
-                or product.attrs.get(
-                    "spatial_smoothing_kernel", "none"
-                ) != spatial_smoothing_kernel
+                or bool(int(product.attrs.get("smoothed", 0))) != smoothed
             ):
                 return "mismatch"
-            product_wic_width = float(
-                product.attrs.get("wic_smoothing_width_pixels", 0.0)
+            expected_quality_method = (
+                BACKGROUND_QUALITY_WEIGHT_METHOD
+                if count_source == "background_subtracted"
+                else UNSUBTRACTED_QUALITY_WEIGHT_METHOD
             )
-            product_si13_width = float(
-                product.attrs.get("si13_smoothing_width_pixels", 0.0)
+            if product.method_quality_weight_method != expected_quality_method:
+                return "invalid"
+            expected_widths = resolve_smoothing_configuration(
+                smoothed,
+                wic_smoothing_width,
+                si12_smoothing_width,
+                si13_smoothing_width,
             )
-            if (
-                not np.isclose(product_wic_width, wic_smoothing_width)
-                or not np.isclose(product_si13_width, si13_smoothing_width)
-            ):
-                return "mismatch"
+            for sensor, expected_width in expected_widths.items():
+                product_width = float(product.attrs.get(
+                    f"{sensor}_smoothing_width_pixels", np.nan
+                ))
+                product_applied = bool(int(product.attrs.get(
+                    f"{sensor}_smoothing_applied", -1
+                )))
+                if (
+                    not np.isclose(product_width, expected_width)
+                    or product_applied != (expected_width > 0)
+                ):
+                    return "mismatch"
             if (
                 product.source_fuv_detector_time_decoding != SOURCE_TIME_DECODING
                 or product.count_uncertainty_mode != COUNT_UNCERTAINTY_MODE
@@ -113,8 +130,9 @@ def save_precipitation_detector(product, filename):
             product.proton_energy_constant,
             product.proton_energy_uncertainty_constant,
             product.count_source,
-            product.spatial_smoothing_kernel,
+            product.smoothed,
             product.wic_smoothing_width_pixels,
+            product.si12_smoothing_width_pixels,
             product.si13_smoothing_width_pixels,
         )
         if status != "complete":
@@ -171,9 +189,10 @@ def process_orbit(
     proton_energy_uncertainty,
     count_source,
     software_version,
-    spatial_smoothing_kernel="none",
-    wic_smoothing_width=0.0,
-    si13_smoothing_width=0.0,
+    smoothed=True,
+    wic_smoothing_width=DEFAULT_WIC_SMOOTHING_WIDTH,
+    si12_smoothing_width=DEFAULT_SI12_SMOOTHING_WIDTH,
+    si13_smoothing_width=DEFAULT_SI13_SMOOTHING_WIDTH,
 ):
     """Calculate and save one detector-space precipitation orbit."""
 
@@ -186,8 +205,9 @@ def process_orbit(
             proton_energy=proton_energy,
             proton_energy_uncertainty=proton_energy_uncertainty,
             count_source=count_source,
-            spatial_smoothing_kernel=spatial_smoothing_kernel,
+            smoothed=smoothed,
             wic_smoothing_width=wic_smoothing_width,
+            si12_smoothing_width=si12_smoothing_width,
             si13_smoothing_width=si13_smoothing_width,
             software_version=software_version,
         )
@@ -227,7 +247,7 @@ def parse_args(argv=None):
         "--retrieval-label",
         help=(
             "output subfolder; otherwise derived from proton model, count "
-            "source, smoothing kernel, and widths"
+            "source, smoothing state, and widths"
         ),
     )
     parser.add_argument("--orbit", action="append", type=int)
@@ -248,29 +268,28 @@ def parse_args(argv=None):
         help="Product-1 count stage (default: background_subtracted).",
     )
     parser.add_argument(
-        "--spatial-smoothing-kernel",
-        choices=SPATIAL_SMOOTHING_KERNELS,
-        default="none",
-        help=(
-            "Diagnostic WIC/SI13 smoothing before proton correction "
-            "(default: none)."
-        ),
+        "--smoothed",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable optional per-sensor Gaussian smoothing (default: enabled).",
     )
     parser.add_argument(
         "--wic-smoothing-width",
         type=float,
-        help=(
-            "WIC Gaussian sigma or odd boxcar side width in WIC pixels; "
-            "defaults to 1 for Gaussian and 3 for boxcar."
-        ),
+        default=DEFAULT_WIC_SMOOTHING_WIDTH,
+        help="WIC Gaussian sigma in WIC pixels; 0 disables WIC smoothing.",
+    )
+    parser.add_argument(
+        "--si12-smoothing-width",
+        type=float,
+        default=DEFAULT_SI12_SMOOTHING_WIDTH,
+        help="SI12 Gaussian sigma in WIC pixels; 0 disables SI12 smoothing.",
     )
     parser.add_argument(
         "--si13-smoothing-width",
         type=float,
-        help=(
-            "SI13 Gaussian sigma or odd boxcar side width in WIC pixels; "
-            "defaults to 1 for Gaussian and 3 for boxcar."
-        ),
+        default=DEFAULT_SI13_SMOOTHING_WIDTH,
+        help="SI13 Gaussian sigma in WIC pixels; 0 disables SI13 smoothing.",
     )
     parser.add_argument(
         "--workers", type=int, default=1,
@@ -285,11 +304,14 @@ def main(argv=None):
     if args.workers < 1:
         raise ValueError("workers must be at least 1")
     smoothing_widths = resolve_smoothing_configuration(
-        args.spatial_smoothing_kernel,
+        args.smoothed,
         args.wic_smoothing_width,
+        args.si12_smoothing_width,
         args.si13_smoothing_width,
     )
-    wic_smoothing_width, si13_smoothing_width = smoothing_widths
+    wic_smoothing_width = smoothing_widths["wic"]
+    si12_smoothing_width = smoothing_widths["si12"]
+    si13_smoothing_width = smoothing_widths["si13"]
 
     base_input = args.base_input.expanduser()
     base_output = (
@@ -303,14 +325,19 @@ def main(argv=None):
             if args.count_source == "background_subtracted"
             else "_unsubtracted"
         )
-        if args.spatial_smoothing_kernel == "none":
-            smoothing_suffix = ""
+        if not args.smoothed:
+            smoothing_suffix = "_unsmoothed"
         else:
-            wic_label = str(wic_smoothing_width).replace(".", "p")
-            si13_label = str(si13_smoothing_width).replace(".", "p")
+            width_labels = {
+                "wic": f"{wic_smoothing_width:g}".replace(".", "p"),
+                "si12": f"{si12_smoothing_width:g}".replace(".", "p"),
+                "si13": f"{si13_smoothing_width:g}".replace(".", "p"),
+            }
             smoothing_suffix = (
-                f"_smooth_{args.spatial_smoothing_kernel}"
-                f"_wic{wic_label}_si13{si13_label}"
+                "_smoothed"
+                f"_wic{width_labels['wic']}"
+                f"_si12{width_labels['si12']}"
+                f"_si13{width_labels['si13']}"
             )
         retrieval_label = (
             f"IR_{args.proton_energy_model}{count_suffix}{smoothing_suffix}"
@@ -340,8 +367,9 @@ def main(argv=None):
             args.proton_energy,
             args.proton_energy_uncertainty,
             args.count_source,
-            args.spatial_smoothing_kernel,
+            args.smoothed,
             wic_smoothing_width,
+            si12_smoothing_width,
             si13_smoothing_width,
         )
         if status == "mismatch":
@@ -372,8 +400,9 @@ def main(argv=None):
         proton_energy=args.proton_energy,
         proton_energy_uncertainty=args.proton_energy_uncertainty,
         count_source=args.count_source,
-        spatial_smoothing_kernel=args.spatial_smoothing_kernel,
+        smoothed=args.smoothed,
         wic_smoothing_width=wic_smoothing_width,
+        si12_smoothing_width=si12_smoothing_width,
         si13_smoothing_width=si13_smoothing_width,
         software_version=software_version,
     )
