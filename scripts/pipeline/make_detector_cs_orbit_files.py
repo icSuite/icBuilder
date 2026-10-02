@@ -1,4 +1,4 @@
-"""Build paired fixed-grid precipitation and conductance orbit products."""
+"""Build fixed-grid precipitation and optional conductance orbit products."""
 
 #%% Imports
 
@@ -16,6 +16,7 @@ from tqdm.contrib.concurrent import process_map
 from icbuilder.detectorcs import (
     BINNING_METHOD,
     build_detector_cs_products,
+    build_precipitation_cs_product,
 )
 from icbuilder.grids import DETECTOR_CS_GRID_ID
 from icbuilder.precipitationcs import SCHEMA_VERSION as PRECIPITATION_CS_SCHEMA_VERSION
@@ -174,20 +175,39 @@ def process_orbit(
     precipitation_output_directory,
     conductance_output_directory,
     software_version,
+    precipitation_only=False,
 ):
-    """Reduce and atomically publish one paired detector orbit."""
+    """Reduce and atomically publish one detector orbit."""
 
     orbit, write_precipitation, write_conductance = task
     source_precipitation = (
         precipitation_input_directory / f"or_{orbit:04d}.nc"
     )
-    source_conductance = conductance_input_directory / f"or_{orbit:04d}.nc"
     precipitation_output = (
         precipitation_output_directory / f"or_{orbit:04d}.nc"
     )
-    conductance_output = conductance_output_directory / f"or_{orbit:04d}.nc"
 
     try:
+        if precipitation_only:
+            precipitation = build_precipitation_cs_product(
+                source_precipitation,
+                software_version=software_version,
+            )
+            if write_precipitation:
+                _atomic_save(
+                    precipitation,
+                    precipitation_output,
+                    precipitation_cs_file_status,
+                    source_precipitation,
+                )
+            return orbit, precipitation.shape[0]
+
+        source_conductance = (
+            conductance_input_directory / f"or_{orbit:04d}.nc"
+        )
+        conductance_output = (
+            conductance_output_directory / f"or_{orbit:04d}.nc"
+        )
         precipitation, conductance = build_detector_cs_products(
             source_precipitation,
             source_conductance,
@@ -221,8 +241,8 @@ def process_orbit(
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description=(
-            "Reduce paired detector precipitation and conductance onto the "
-            "frozen 46-by-46 Cubed-Sphere grid."
+            "Reduce detector precipitation and optionally paired conductance "
+            "onto the frozen 46-by-46 Cubed-Sphere grid."
         )
     )
     parser.add_argument(
@@ -253,6 +273,14 @@ def parse_args(argv=None):
     parser.add_argument("--orbit", action="append", type=int)
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--precipitation-only",
+        action="store_true",
+        help=(
+            "Write precipitation_cs directly from Product 2 without "
+            "requiring or writing conductance products."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -282,17 +310,25 @@ def main(argv=None):
         / args.retrieval_label / args.conductance_model
     )
     precipitation_output_directory.mkdir(parents=True, exist_ok=True)
-    conductance_output_directory.mkdir(parents=True, exist_ok=True)
+    if not args.precipitation_only:
+        conductance_output_directory.mkdir(parents=True, exist_ok=True)
 
     precipitation_orbits = get_orbits(precipitation_input_directory)
-    conductance_orbits = get_orbits(conductance_input_directory)
-    available = np.intersect1d(precipitation_orbits, conductance_orbits)
+    if args.precipitation_only:
+        available = precipitation_orbits
+    else:
+        conductance_orbits = get_orbits(conductance_input_directory)
+        available = np.intersect1d(precipitation_orbits, conductance_orbits)
     selected = available if args.orbit is None else np.unique(args.orbit)
     missing = selected[~np.isin(selected, available)]
     if missing.size:
+        source_description = (
+            "detector Product 2"
+            if args.precipitation_only
+            else "paired detector Product 2/Product 3"
+        )
         raise ValueError(
-            "paired detector Product 2/Product 3 orbit is missing: "
-            f"{missing.tolist()}"
+            f"{source_description} orbit is missing: {missing.tolist()}"
         )
 
     tasks = []
@@ -301,24 +337,38 @@ def main(argv=None):
         source_precipitation = (
             precipitation_input_directory / f"or_{orbit:04d}.nc"
         )
-        source_conductance = (
-            conductance_input_directory / f"or_{orbit:04d}.nc"
-        )
         precipitation_output = (
             precipitation_output_directory / f"or_{orbit:04d}.nc"
         )
-        conductance_output = conductance_output_directory / f"or_{orbit:04d}.nc"
 
         if args.overwrite:
-            precipitation_status = conductance_status = "invalid"
+            precipitation_status = "invalid"
         else:
             precipitation_status = precipitation_cs_file_status(
                 precipitation_output, source_precipitation
             )
-            conductance_status = conductance_cs_file_status(
-                conductance_output, source_conductance, precipitation_output
+        if args.precipitation_only:
+            conductance_status = "complete"
+        else:
+            source_conductance = (
+                conductance_input_directory / f"or_{orbit:04d}.nc"
             )
-        if precipitation_status == "mismatch" or conductance_status == "mismatch":
+            conductance_output = (
+                conductance_output_directory / f"or_{orbit:04d}.nc"
+            )
+            conductance_status = (
+                "invalid"
+                if args.overwrite
+                else conductance_cs_file_status(
+                    conductance_output,
+                    source_conductance,
+                    precipitation_output,
+                )
+            )
+        if (
+            precipitation_status == "mismatch"
+            or conductance_status == "mismatch"
+        ):
             raise ValueError(
                 f"orbit {orbit:04d} CS output does not match its source or "
                 "configuration; use another output folder or --overwrite"
@@ -328,9 +378,13 @@ def main(argv=None):
         if write_precipitation or write_conductance:
             tasks.append((orbit, write_precipitation, write_conductance))
 
+    product_label = (
+        "precipitation CS"
+        if args.precipitation_only
+        else f"detector CS/{args.conductance_model}"
+    )
     print(
-        f"detector CS/{DETECTOR_CS_GRID_ID}/{args.retrieval_label}/"
-        f"{args.conductance_model}: "
+        f"{product_label}/{DETECTOR_CS_GRID_ID}/{args.retrieval_label}: "
         f"{len(selected) - len(tasks)} complete, {len(tasks)} pending"
     )
     if not tasks:
@@ -344,6 +398,7 @@ def main(argv=None):
         precipitation_output_directory=precipitation_output_directory,
         conductance_output_directory=conductance_output_directory,
         software_version=current_revision(repository),
+        precipitation_only=args.precipitation_only,
     )
     if args.workers > 1:
         return process_map(

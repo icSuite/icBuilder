@@ -111,18 +111,37 @@ class PrecipitationCS:
 
         self.method = source.method
         self.count_source = source.count_source
-        self.spatial_smoothing_kernel = source.spatial_smoothing_kernel
-        self.wic_smoothing_width_pixels = source.wic_smoothing_width_pixels
-        self.si13_smoothing_width_pixels = source.si13_smoothing_width_pixels
-        self.spatial_smoothing_width_definition = source.attrs.get(
-            "spatial_smoothing_width_definition", "not applicable"
+        self.smoothed = bool(int(source.attrs["smoothed"]))
+        self.smoothing_method = source.attrs["smoothing_method"]
+        for sensor in ("wic", "si12", "si13"):
+            setattr(
+                self,
+                f"{sensor}_smoothing_width_pixels",
+                float(source.attrs[f"{sensor}_smoothing_width_pixels"]),
+            )
+            setattr(
+                self,
+                f"{sensor}_smoothing_applied",
+                bool(int(source.attrs[f"{sensor}_smoothing_applied"])),
+            )
+        self.smoothing_width_definition = source.attrs[
+            "smoothing_width_definition"
+        ]
+        self.smoothing_operation_order = source.attrs[
+            "smoothing_operation_order"
+        ]
+        self.smoothing_variance_method = source.attrs[
+            "smoothing_variance_method"
+        ]
+        self.method_quality_weight_method = source.attrs[
+            "method_quality_weight_method"
+        ]
+        self.method_quality_weight_floor = float(
+            source.attrs["method_quality_weight_floor"]
         )
-        self.spatial_smoothing_operation_order = source.attrs.get(
-            "spatial_smoothing_operation_order", "not applicable"
-        )
-        self.spatial_smoothing_variance_method = source.attrs.get(
-            "spatial_smoothing_variance_method", "not applicable"
-        )
+        self.method_quality_weight_spatial_propagation = source.attrs[
+            "method_quality_weight_spatial_propagation"
+        ]
         self.proton_flux_source = source.proton_flux_source
         self.proton_energy_model = source.proton_energy_model
         self.proton_energy_uncertainty_method = (
@@ -178,8 +197,13 @@ class PrecipitationCS:
 
         for name in MEAN_FIELDS:
             values = np.asarray(source.read(name, frame), dtype=float)
+            valid = (
+                np.isfinite(values)
+                if name == "method_quality_weight"
+                else method_valid
+            )
             reduced, _ = reduce_area_mean(
-                values, method_valid, mapping, output_shape
+                values, valid, mapping, output_shape
             )
             getattr(self, name)[frame] = reduced
 
@@ -236,8 +260,13 @@ class PrecipitationCS:
         for name in MEAN_FIELDS:
             values = np.asarray(source.read(name), dtype=float)
             for frame, mapping in enumerate(mappings):
+                valid = (
+                    np.isfinite(values[frame])
+                    if name == "method_quality_weight"
+                    else method_valid[frame]
+                )
                 reduced, _ = reduce_area_mean(
-                    values[frame], method_valid[frame], mapping, output_shape
+                    values[frame], valid, mapping, output_shape
                 )
                 getattr(self, name)[frame] = reduced
 
@@ -306,17 +335,23 @@ class PrecipitationCS:
             nc.uncertainty_method = UNCERTAINTY_METHOD
             nc.method = self.method
             nc.count_source = self.count_source
-            nc.spatial_smoothing_kernel = self.spatial_smoothing_kernel
+            nc.smoothed = np.int8(self.smoothed)
+            nc.smoothing_method = self.smoothing_method
             nc.wic_smoothing_width_pixels = self.wic_smoothing_width_pixels
+            nc.si12_smoothing_width_pixels = self.si12_smoothing_width_pixels
             nc.si13_smoothing_width_pixels = self.si13_smoothing_width_pixels
-            nc.spatial_smoothing_width_definition = (
-                self.spatial_smoothing_width_definition
-            )
-            nc.spatial_smoothing_operation_order = (
-                self.spatial_smoothing_operation_order
-            )
-            nc.spatial_smoothing_variance_method = (
-                self.spatial_smoothing_variance_method
+            for sensor in ("wic", "si12", "si13"):
+                nc.setncattr(
+                    f"{sensor}_smoothing_applied",
+                    np.int8(getattr(self, f"{sensor}_smoothing_applied")),
+                )
+            nc.smoothing_width_definition = self.smoothing_width_definition
+            nc.smoothing_operation_order = self.smoothing_operation_order
+            nc.smoothing_variance_method = self.smoothing_variance_method
+            nc.method_quality_weight_method = self.method_quality_weight_method
+            nc.method_quality_weight_floor = self.method_quality_weight_floor
+            nc.method_quality_weight_spatial_propagation = (
+                self.method_quality_weight_spatial_propagation
             )
             nc.proton_flux_source = self.proton_flux_source
             nc.proton_energy_model = self.proton_energy_model

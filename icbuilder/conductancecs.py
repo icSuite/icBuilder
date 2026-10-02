@@ -29,7 +29,7 @@ from .precipitationdetector import COUNT_UNCERTAINTY_MODE
 
 #%% Product contract
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 MEAN_FIELDS = {
     "method_quality_weight": "1",
@@ -101,6 +101,30 @@ class ConductanceCS:
             source.conductance_uncertainty_method
         )
         self.precipitation_method = source.precipitation_method
+        self.count_source = source.count_source
+        self.smoothed = source.smoothed
+        self.smoothing_method = source.smoothing_method
+        for sensor in ("wic", "si12", "si13"):
+            setattr(
+                self,
+                f"{sensor}_smoothing_width_pixels",
+                getattr(source, f"{sensor}_smoothing_width_pixels"),
+            )
+            setattr(
+                self,
+                f"{sensor}_smoothing_applied",
+                getattr(source, f"{sensor}_smoothing_applied"),
+            )
+        self.smoothing_width_definition = source.smoothing_width_definition
+        self.smoothing_operation_order = source.smoothing_operation_order
+        self.smoothing_variance_method = source.smoothing_variance_method
+        self.method_quality_weight_method = (
+            source.method_quality_weight_method
+        )
+        self.method_quality_weight_floor = source.method_quality_weight_floor
+        self.method_quality_weight_spatial_propagation = (
+            source.method_quality_weight_spatial_propagation
+        )
         self.proton_flux_source = source.proton_flux_source
         self.proton_energy_model = source.proton_energy_model
         self.proton_energy_uncertainty_method = (
@@ -162,8 +186,13 @@ class ConductanceCS:
 
         for name in MEAN_FIELDS:
             values = np.asarray(source.read(name, frame), dtype=float)
+            valid = (
+                np.isfinite(values)
+                if name == "method_quality_weight"
+                else conductance_valid
+            )
             reduced, _ = reduce_area_mean(
-                values, conductance_valid, mapping, output_shape
+                values, valid, mapping, output_shape
             )
             getattr(self, name)[frame] = reduced
 
@@ -220,9 +249,14 @@ class ConductanceCS:
         for name in MEAN_FIELDS:
             values = np.asarray(source.read(name), dtype=float)
             for frame, mapping in enumerate(mappings):
+                valid = (
+                    np.isfinite(values[frame])
+                    if name == "method_quality_weight"
+                    else conductance_valid[frame]
+                )
                 reduced, _ = reduce_area_mean(
                     values[frame],
-                    conductance_valid[frame],
+                    valid,
                     mapping,
                     output_shape,
                 )
@@ -294,6 +328,25 @@ class ConductanceCS:
                 self.conductance_uncertainty_method
             )
             nc.precipitation_method = self.precipitation_method
+            nc.count_source = self.count_source
+            nc.smoothed = np.int8(self.smoothed)
+            nc.smoothing_method = self.smoothing_method
+            nc.wic_smoothing_width_pixels = self.wic_smoothing_width_pixels
+            nc.si12_smoothing_width_pixels = self.si12_smoothing_width_pixels
+            nc.si13_smoothing_width_pixels = self.si13_smoothing_width_pixels
+            for sensor in ("wic", "si12", "si13"):
+                nc.setncattr(
+                    f"{sensor}_smoothing_applied",
+                    np.int8(getattr(self, f"{sensor}_smoothing_applied")),
+                )
+            nc.smoothing_width_definition = self.smoothing_width_definition
+            nc.smoothing_operation_order = self.smoothing_operation_order
+            nc.smoothing_variance_method = self.smoothing_variance_method
+            nc.method_quality_weight_method = self.method_quality_weight_method
+            nc.method_quality_weight_floor = self.method_quality_weight_floor
+            nc.method_quality_weight_spatial_propagation = (
+                self.method_quality_weight_spatial_propagation
+            )
             nc.proton_flux_source = self.proton_flux_source
             nc.proton_energy_model = self.proton_energy_model
             nc.proton_energy_uncertainty_method = (

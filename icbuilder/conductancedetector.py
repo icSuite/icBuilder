@@ -12,6 +12,7 @@ from netCDF4 import Dataset, date2num
 from .fuvdetector import SOURCE_TIME_DECODING, source_identity
 from .precipitationdetector import (
     COUNT_UNCERTAINTY_MODE,
+    PREPROCESSING_METADATA_ATTRIBUTES,
     PRECIPITATION_METHOD,
     SCHEMA_VERSION as PRECIPITATION_SCHEMA_VERSION,
 )
@@ -19,7 +20,7 @@ from .precipitationdetector import (
 
 #%% Product configuration
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 CONDUCTANCE_MODEL = "robinson"
 CONDUCTANCE_UNCERTAINTY_METHOD = (
     "first-order Robinson propagation of Product-2 dE0, dFe, and varE0Fe; "
@@ -104,6 +105,8 @@ def load_precipitation_detector(filename):
             ).copy(),
             "kp_provenance": dict(source.kp_provenance),
         }
+        for name in PREPROCESSING_METADATA_ATTRIBUTES:
+            product[name] = source.attrs[name]
         if product["proton_energy_model"] == "constant":
             product["proton_energy_constant"] = float(source.proton_energy_constant)
             product["proton_energy_uncertainty_constant"] = float(
@@ -158,6 +161,38 @@ class ConductanceDetector:
         self.software_version = str(software_version)
 
         self.precipitation_method = precipitation["method"]
+        self.count_source = str(precipitation["count_source"])
+        self.smoothed = bool(int(precipitation["smoothed"]))
+        self.smoothing_method = str(precipitation["smoothing_method"])
+        for sensor in ("wic", "si12", "si13"):
+            setattr(
+                self,
+                f"{sensor}_smoothing_width_pixels",
+                float(precipitation[f"{sensor}_smoothing_width_pixels"]),
+            )
+            setattr(
+                self,
+                f"{sensor}_smoothing_applied",
+                bool(int(precipitation[f"{sensor}_smoothing_applied"])),
+            )
+        self.smoothing_width_definition = str(
+            precipitation["smoothing_width_definition"]
+        )
+        self.smoothing_operation_order = str(
+            precipitation["smoothing_operation_order"]
+        )
+        self.smoothing_variance_method = str(
+            precipitation["smoothing_variance_method"]
+        )
+        self.method_quality_weight_method = str(
+            precipitation["method_quality_weight_method"]
+        )
+        self.method_quality_weight_floor = float(
+            precipitation["method_quality_weight_floor"]
+        )
+        self.method_quality_weight_spatial_propagation = str(
+            precipitation["method_quality_weight_spatial_propagation"]
+        )
         self.proton_flux_source = precipitation["proton_flux_source"]
         self.proton_energy_model = precipitation["proton_energy_model"]
         self.proton_energy_uncertainty_method = precipitation[
@@ -288,6 +323,25 @@ class ConductanceDetector:
                 self.conductance_uncertainty_method
             )
             nc.precipitation_method = self.precipitation_method
+            nc.count_source = self.count_source
+            nc.smoothed = np.int8(self.smoothed)
+            nc.smoothing_method = self.smoothing_method
+            nc.wic_smoothing_width_pixels = self.wic_smoothing_width_pixels
+            nc.si12_smoothing_width_pixels = self.si12_smoothing_width_pixels
+            nc.si13_smoothing_width_pixels = self.si13_smoothing_width_pixels
+            for sensor in ("wic", "si12", "si13"):
+                nc.setncattr(
+                    f"{sensor}_smoothing_applied",
+                    np.int8(getattr(self, f"{sensor}_smoothing_applied")),
+                )
+            nc.smoothing_width_definition = self.smoothing_width_definition
+            nc.smoothing_operation_order = self.smoothing_operation_order
+            nc.smoothing_variance_method = self.smoothing_variance_method
+            nc.method_quality_weight_method = self.method_quality_weight_method
+            nc.method_quality_weight_floor = self.method_quality_weight_floor
+            nc.method_quality_weight_spatial_propagation = (
+                self.method_quality_weight_spatial_propagation
+            )
             nc.proton_flux_source = self.proton_flux_source
             nc.proton_energy_model = self.proton_energy_model
             nc.proton_energy_uncertainty_method = (

@@ -339,3 +339,40 @@ def build_detector_cs_products(
         conductance_product.reduce(conductance, mappings, cell_area)
 
     return precipitation_product, conductance_product
+
+
+def build_precipitation_cs_product(
+    precipitation_filename,
+    *,
+    software_version="unrecorded experimental worktree",
+):
+    """Reduce one detector Product 2 without requiring detector Product 3."""
+
+    from .grids import make_detector_cs_grid
+    from .precipitationcs import PrecipitationCS
+
+    grid = make_detector_cs_grid()
+    with open_product(precipitation_filename) as precipitation:
+        product = PrecipitationCS(
+            precipitation,
+            grid=grid,
+            software_version=software_version,
+        )
+        mlat = np.asarray(precipitation.read("mlat"), dtype=float)
+        mlt = np.asarray(precipitation.read("mlt"), dtype=float)
+
+        mappings = []
+        cell_area = None
+        for frame in range(product.shape[0]):
+            mapping, frame_cell_area = make_detector_cs_mapping(
+                mlat[frame],
+                mlt[frame],
+                grid,
+            )
+            mappings.append(mapping)
+            if cell_area is None:
+                cell_area = frame_cell_area
+
+        product.reduce(precipitation, mappings, cell_area)
+
+    return product

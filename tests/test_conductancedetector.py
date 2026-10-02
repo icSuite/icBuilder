@@ -58,6 +58,21 @@ def write_precipitation_detector(path, proton_energy_model="hardy"):
         nc.proton_operation_order = "test operation order"
         nc.count_uncertainty_mode = COUNT_UNCERTAINTY_MODE
         nc.count_uncertainty_method = "test count uncertainty"
+        nc.count_source = "background_subtracted"
+        nc.method_quality_weight_method = "three-sensor test product"
+        nc.smoothed = np.int8(0)
+        nc.smoothing_method = "none"
+        nc.wic_smoothing_width_pixels = 0.0
+        nc.si12_smoothing_width_pixels = 0.0
+        nc.si13_smoothing_width_pixels = 0.0
+        nc.wic_smoothing_applied = np.int8(0)
+        nc.si12_smoothing_applied = np.int8(0)
+        nc.si13_smoothing_applied = np.int8(0)
+        nc.smoothing_width_definition = "not applicable"
+        nc.smoothing_operation_order = "test smoothing order"
+        nc.smoothing_variance_method = "test smoothing variance"
+        nc.method_quality_weight_floor = 1e-6
+        nc.method_quality_weight_spatial_propagation = "geometric test product"
         nc.source_fuv_detector = "fuv_detector/or_0001.nc"
         nc.source_fuv_detector_sha256 = "source-fuv-sha256"
         nc.source_preprocessing_label = "fuvpy_bs_directional_v1"
@@ -111,12 +126,11 @@ def write_precipitation_detector(path, proton_energy_model="hardy"):
             "dEp": 0.0,
             "Fp": 0.8,
             "dFp": 0.1,
-            "wic_quality_weight": 0.8,
-            "si12_quality_weight": 0.8,
-            "si13_quality_weight": 0.8,
             "wic_coverage": 1.0,
             "si12_coverage": 1.0,
             "si13_coverage": 1.0,
+            "si12": 4.0,
+            "dsi12": 0.5,
             "wic_corrected": 10.0,
             "dwic_corrected": 1.0,
             "si13_corrected": 5.0,
@@ -202,6 +216,20 @@ def test_detector_conductance_netcdf_is_self_describing(tmp_path):
         assert nc.schema_version == SCHEMA_VERSION
         assert nc.conductance_model == CONDUCTANCE_MODEL
         assert nc.precipitation_method == PRECIPITATION_METHOD
+        assert nc.count_source == "background_subtracted"
+        assert nc.smoothed == 0
+        assert nc.smoothing_method == "none"
+        assert nc.wic_smoothing_width_pixels == 0
+        assert nc.si12_smoothing_width_pixels == 0
+        assert nc.si13_smoothing_width_pixels == 0
+        assert nc.wic_smoothing_applied == 0
+        assert nc.si12_smoothing_applied == 0
+        assert nc.si13_smoothing_applied == 0
+        assert nc.smoothing_operation_order == "test smoothing order"
+        assert nc.smoothing_variance_method == "test smoothing variance"
+        assert nc.method_quality_weight_method == "three-sensor test product"
+        assert nc.method_quality_weight_floor == 1e-6
+        assert "geometric" in nc.method_quality_weight_spatial_propagation
         assert nc.source_precipitation_detector == str(source)
         assert (
             nc.source_precipitation_detector_schema_version
@@ -247,8 +275,8 @@ def test_detector_conductance_rejects_wrong_product2_schema(tmp_path):
     with pytest.raises(
         ValueError,
         match=(
-            "schema_version 1; expected "
-            f"{PRECIPITATION_SCHEMA_VERSION}"
+            "schema_version 1; expected one of "
+            r"\(3, 4\)"
         ),
     ):
         ConductanceDetector(source)

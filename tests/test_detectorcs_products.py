@@ -159,7 +159,22 @@ def test_paired_products_share_mapping_and_round_trip(tmp_path, monkeypatch):
     assert np.isfinite(precipitation.si12[precipitation.method_valid]).all()
     assert np.isfinite(precipitation.dsi12[precipitation.method_valid]).all()
     assert precipitation.count_source == "background_subtracted"
-    assert precipitation.spatial_smoothing_kernel == "none"
+    assert precipitation.smoothed
+    assert precipitation.smoothing_method == "gaussian"
+    assert precipitation.wic_smoothing_applied
+    assert not precipitation.si12_smoothing_applied
+    assert precipitation.si13_smoothing_applied
+    assert conductance.count_source == precipitation.count_source
+    assert conductance.smoothed == precipitation.smoothed
+    assert conductance.smoothing_method == precipitation.smoothing_method
+    assert (
+        conductance.method_quality_weight_method
+        == precipitation.method_quality_weight_method
+    )
+    assert (
+        conductance.method_quality_weight_spatial_propagation
+        == precipitation.method_quality_weight_spatial_propagation
+    )
 
     recalculated = robinson_conductance(
         conductance.E0,
@@ -190,11 +205,26 @@ def test_paired_products_share_mapping_and_round_trip(tmp_path, monkeypatch):
         assert nc.variables["P"].shape == (2, 46, 46)
         assert "not recalculated" in nc.nonlinear_ordering
         assert nc.groups["grid"].variables["mlat"].shape == (46, 46)
+        assert nc.count_source == "background_subtracted"
+        assert nc.smoothed == 1
+        assert nc.smoothing_method == "gaussian"
+        assert nc.wic_smoothing_width_pixels == 0.8
+        assert nc.si12_smoothing_width_pixels == 0
+        assert nc.si13_smoothing_width_pixels == 1.2
+        assert nc.wic_smoothing_applied == 1
+        assert nc.si12_smoothing_applied == 0
+        assert nc.si13_smoothing_applied == 1
+        assert "geometric" in nc.method_quality_weight_spatial_propagation
     with Dataset(precipitation_output) as nc:
         assert nc.variables["si12"].shape == (2, 46, 46)
         assert nc.variables["dsi12"].shape == (2, 46, 46)
         assert nc.count_source == "background_subtracted"
-        assert nc.spatial_smoothing_kernel == "none"
+        assert nc.smoothed == 1
+        assert nc.smoothing_method == "gaussian"
+        assert nc.wic_smoothing_width_pixels == 0.8
+        assert nc.si12_smoothing_width_pixels == 0
+        assert nc.si13_smoothing_width_pixels == 1.2
+        assert "geometric" in nc.method_quality_weight_spatial_propagation
 
 
 def test_paired_reduction_reads_each_detector_cube_once(tmp_path, monkeypatch):
@@ -219,6 +249,42 @@ def test_paired_reduction_reads_each_detector_cube_once(tmp_path, monkeypatch):
 
     assert reads
     assert max(reads.values()) == 1
+
+
+def test_quality_weight_reduction_is_independent_of_physical_validity(tmp_path):
+    precipitation_source, conductance_source = write_detector_pair(
+        tmp_path / "input"
+    )
+    with Dataset(precipitation_source, "r+") as nc:
+        nc["method_valid"][:] = 0
+        nc["method_quality_weight"][:] = 0.5
+    ConductanceDetector(
+        precipitation_source,
+        software_version="product3-test",
+    ).to_nc(conductance_source)
+
+    precipitation, conductance = build_detector_cs_products(
+        precipitation_source,
+        conductance_source,
+        software_version="cs-test",
+    )
+
+    assert not precipitation.method_valid.any()
+    assert not conductance.conductance_valid.any()
+    assert np.isfinite(precipitation.method_quality_weight).any()
+    assert np.isfinite(conductance.method_quality_weight).any()
+    np.testing.assert_allclose(
+        precipitation.method_quality_weight[
+            np.isfinite(precipitation.method_quality_weight)
+        ],
+        0.5,
+    )
+    np.testing.assert_allclose(
+        conductance.method_quality_weight[
+            np.isfinite(conductance.method_quality_weight)
+        ],
+        0.5,
+    )
 
 
 def test_combined_orbit_runner_writes_and_restarts(tmp_path, monkeypatch):
@@ -249,6 +315,32 @@ def test_combined_orbit_runner_writes_and_restarts(tmp_path, monkeypatch):
     with Dataset(precipitation_output, "r+") as nc:
         nc.schema_version = 0
     assert ORBIT_SCRIPT.main(arguments) == [(1, 2)]
+
+
+def test_precipitation_only_runner_does_not_require_conductance(
+    tmp_path, monkeypatch
+):
+    base_input = tmp_path / "input"
+    base_output = tmp_path / "output"
+    _, conductance_source = write_detector_pair(base_input)
+    conductance_source.unlink()
+    monkeypatch.setattr(ORBIT_SCRIPT, "current_revision", lambda path: "test")
+
+    arguments = [
+        "--base-input", str(base_input),
+        "--base-output", str(base_output),
+        "--orbit", "1",
+        "--precipitation-only",
+    ]
+    assert ORBIT_SCRIPT.main(arguments) == [(1, 2)]
+
+    precipitation_output = (
+        base_output / "precipitation_cs" / DETECTOR_CS_GRID_ID
+        / "IR_hardy" / "or_0001.nc"
+    )
+    assert precipitation_output.is_file()
+    assert not (base_output / "conductance_cs").exists()
+    assert ORBIT_SCRIPT.main(arguments) == []
 
 
 def test_combined_orbit_runner_parallel_routing(tmp_path, monkeypatch):
