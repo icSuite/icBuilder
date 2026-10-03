@@ -343,6 +343,63 @@ def test_precipitation_only_runner_does_not_require_conductance(
     assert ORBIT_SCRIPT.main(arguments) == []
 
 
+def test_conductance_only_runner_preserves_existing_precipitation(
+    tmp_path, monkeypatch
+):
+    base_input = tmp_path / "input"
+    base_output = tmp_path / "output"
+    write_detector_pair(base_input)
+    monkeypatch.setattr(ORBIT_SCRIPT, "current_revision", lambda path: "test")
+
+    common = [
+        "--base-input", str(base_input),
+        "--base-output", str(base_output),
+        "--orbit", "1",
+    ]
+    assert ORBIT_SCRIPT.main(common + ["--precipitation-only"]) == [(1, 2)]
+
+    precipitation_output = (
+        base_output / "precipitation_cs" / DETECTOR_CS_GRID_ID
+        / "IR_hardy" / "or_0001.nc"
+    )
+    precipitation_mtime = precipitation_output.stat().st_mtime_ns
+
+    arguments = common + ["--conductance-only"]
+    assert ORBIT_SCRIPT.main(arguments) == [(1, 2)]
+
+    conductance_output = (
+        base_output / "conductance_cs" / DETECTOR_CS_GRID_ID
+        / "IR_hardy" / "robinson" / "or_0001.nc"
+    )
+    assert conductance_output.is_file()
+    assert precipitation_output.stat().st_mtime_ns == precipitation_mtime
+    assert ORBIT_SCRIPT.main(arguments) == []
+
+
+def test_conductance_only_runner_requires_precipitation_cs(
+    tmp_path, monkeypatch
+):
+    base_input = tmp_path / "input"
+    write_detector_pair(base_input)
+    monkeypatch.setattr(ORBIT_SCRIPT, "current_revision", lambda path: "test")
+
+    with pytest.raises(ValueError, match="run --precipitation-only first"):
+        ORBIT_SCRIPT.main([
+            "--base-input", str(base_input),
+            "--base-output", str(tmp_path / "output"),
+            "--orbit", "1",
+            "--conductance-only",
+        ])
+
+
+def test_cs_runner_rejects_two_single_product_modes():
+    with pytest.raises(SystemExit):
+        ORBIT_SCRIPT.parse_args([
+            "--precipitation-only",
+            "--conductance-only",
+        ])
+
+
 def test_combined_orbit_runner_parallel_routing(tmp_path, monkeypatch):
     base_input = tmp_path / "input"
     for directory in (

@@ -15,6 +15,7 @@ from tqdm.contrib.concurrent import process_map
 
 from icbuilder.detectorcs import (
     BINNING_METHOD,
+    build_conductance_cs_product,
     build_detector_cs_products,
     build_precipitation_cs_product,
 )
@@ -176,6 +177,7 @@ def process_orbit(
     conductance_output_directory,
     software_version,
     precipitation_only=False,
+    conductance_only=False,
 ):
     """Reduce and atomically publish one detector orbit."""
 
@@ -208,6 +210,25 @@ def process_orbit(
         conductance_output = (
             conductance_output_directory / f"or_{orbit:04d}.nc"
         )
+        if conductance_only:
+            conductance = build_conductance_cs_product(
+                source_precipitation,
+                source_conductance,
+                software_version=software_version,
+            )
+            conductance.companion_precipitation_cs = str(
+                precipitation_output
+            )
+            if write_conductance:
+                _atomic_save(
+                    conductance,
+                    conductance_output,
+                    conductance_cs_file_status,
+                    source_conductance,
+                    precipitation_output,
+                )
+            return orbit, conductance.shape[0]
+
         precipitation, conductance = build_detector_cs_products(
             source_precipitation,
             source_conductance,
@@ -273,12 +294,21 @@ def parse_args(argv=None):
     parser.add_argument("--orbit", action="append", type=int)
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--overwrite", action="store_true")
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--precipitation-only",
         action="store_true",
         help=(
             "Write precipitation_cs directly from Product 2 without "
             "requiring or writing conductance products."
+        ),
+    )
+    mode.add_argument(
+        "--conductance-only",
+        action="store_true",
+        help=(
+            "Write conductance_cs from Product 3 while requiring an existing "
+            "matching precipitation_cs product."
         ),
     )
     return parser.parse_args(argv)
@@ -309,7 +339,8 @@ def main(argv=None):
         base_output / args.conductance_output_folder / DETECTOR_CS_GRID_ID
         / args.retrieval_label / args.conductance_model
     )
-    precipitation_output_directory.mkdir(parents=True, exist_ok=True)
+    if not args.conductance_only:
+        precipitation_output_directory.mkdir(parents=True, exist_ok=True)
     if not args.precipitation_only:
         conductance_output_directory.mkdir(parents=True, exist_ok=True)
 
@@ -341,7 +372,7 @@ def main(argv=None):
             precipitation_output_directory / f"or_{orbit:04d}.nc"
         )
 
-        if args.overwrite:
+        if args.overwrite and not args.conductance_only:
             precipitation_status = "invalid"
         else:
             precipitation_status = precipitation_cs_file_status(
@@ -365,6 +396,12 @@ def main(argv=None):
                     precipitation_output,
                 )
             )
+        if args.conductance_only and precipitation_status != "complete":
+            raise ValueError(
+                f"orbit {orbit:04d} precipitation CS is not complete and "
+                "current for its Product-2 source; run --precipitation-only "
+                "first"
+            )
         if (
             precipitation_status == "mismatch"
             or conductance_status == "mismatch"
@@ -373,7 +410,10 @@ def main(argv=None):
                 f"orbit {orbit:04d} CS output does not match its source or "
                 "configuration; use another output folder or --overwrite"
             )
-        write_precipitation = precipitation_status != "complete"
+        write_precipitation = (
+            not args.conductance_only
+            and precipitation_status != "complete"
+        )
         write_conductance = conductance_status != "complete"
         if write_precipitation or write_conductance:
             tasks.append((orbit, write_precipitation, write_conductance))
@@ -381,7 +421,11 @@ def main(argv=None):
     product_label = (
         "precipitation CS"
         if args.precipitation_only
-        else f"detector CS/{args.conductance_model}"
+        else (
+            "conductance CS"
+            if args.conductance_only
+            else f"detector CS/{args.conductance_model}"
+        )
     )
     print(
         f"{product_label}/{DETECTOR_CS_GRID_ID}/{args.retrieval_label}: "
@@ -399,6 +443,7 @@ def main(argv=None):
         conductance_output_directory=conductance_output_directory,
         software_version=current_revision(repository),
         precipitation_only=args.precipitation_only,
+        conductance_only=args.conductance_only,
     )
     if args.workers > 1:
         return process_map(

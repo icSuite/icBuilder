@@ -2,6 +2,8 @@
 
 #%% Imports
 
+from pathlib import Path
+
 import numpy as np
 from icreader import open_product
 from netCDF4 import date2num
@@ -374,5 +376,73 @@ def build_precipitation_cs_product(
                 cell_area = frame_cell_area
 
         product.reduce(precipitation, mappings, cell_area)
+
+    return product
+
+
+def build_conductance_cs_product(
+    precipitation_filename,
+    conductance_filename,
+    *,
+    software_version="unrecorded experimental worktree",
+):
+    """Reduce Product 3 while validating its detector Product-2 source."""
+
+    from .conductancecs import ConductanceCS
+    from .fuvdetector import source_identity
+    from .grids import make_detector_cs_grid
+
+    grid = make_detector_cs_grid()
+    with open_product(precipitation_filename) as precipitation, open_product(
+        conductance_filename
+    ) as conductance:
+        product = ConductanceCS(
+            conductance,
+            grid=grid,
+            software_version=software_version,
+        )
+        validate_detector_pair(
+            precipitation,
+            conductance,
+            source_identity(Path(precipitation_filename)),
+        )
+
+        precipitation_mlat = np.asarray(
+            precipitation.read("mlat"), dtype=float
+        )
+        conductance_mlat = np.asarray(
+            conductance.read("mlat"), dtype=float
+        )
+        if not np.array_equal(
+            precipitation_mlat, conductance_mlat, equal_nan=True
+        ):
+            raise ValueError("detector Product 2 and Product 3 MLAT differ")
+        del precipitation_mlat
+
+        precipitation_mlt = np.asarray(
+            precipitation.read("mlt"), dtype=float
+        )
+        conductance_mlt = np.asarray(
+            conductance.read("mlt"), dtype=float
+        )
+        if not np.array_equal(
+            precipitation_mlt, conductance_mlt, equal_nan=True
+        ):
+            raise ValueError("detector Product 2 and Product 3 MLT differ")
+        del precipitation_mlt
+
+        mappings = []
+        cell_area = None
+        for frame in range(product.shape[0]):
+            mapping, frame_cell_area = make_detector_cs_mapping(
+                conductance_mlat[frame],
+                conductance_mlt[frame],
+                grid,
+            )
+            mappings.append(mapping)
+            if cell_area is None:
+                cell_area = frame_cell_area
+
+        product.reduce(conductance, mappings, cell_area)
 
     return product
