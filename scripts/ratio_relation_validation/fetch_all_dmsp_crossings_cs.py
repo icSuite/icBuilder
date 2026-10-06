@@ -14,10 +14,12 @@ import xarray as xr
 
 from fetch_all_dmsp_crossings import (
     DMSP_FIELDS,
+    DMSP_FLAG_FIELDS,
     SATELLITES,
     SUPPORT_SECONDS,
     index_dmsp_files,
     load_dmsp,
+    dmsp_source_metadata,
     output_is_complete,
     save_orbit,
     unit_vectors,
@@ -51,9 +53,12 @@ IMAGE_FIELDS = {
     "dza": "wic_dza",
     "method_quality_weight": "quality_weight",
     "method_valid": "method_valid",
+    "wic_coverage": "cs_wic_coverage",
+    "si13_coverage": "cs_si13_coverage",
 }
 
 OUTPUT_FIELDS = set(IMAGE_FIELDS.values()) | {"orbit", "wic_source_index"}
+OUTPUT_FIELDS |= {f"dmsp_{name}" for name in DMSP_FIELDS}
 
 
 #%% Fixed-grid matching
@@ -138,8 +143,9 @@ def append_frame_samples(samples, image, matcher, frame, satellite, dmsp):
     samples["cs_inside"].append(inside)
 
     for name in DMSP_FIELDS:
+        dtype = np.int8 if name in DMSP_FLAG_FIELDS else np.float32
         samples[f"dmsp_{name}"].append(
-            np.asarray(dmsp[name].values, dtype=np.float32)[finite]
+            np.asarray(dmsp[name].values, dtype=dtype)[finite]
         )
 
 
@@ -221,6 +227,7 @@ def process_and_save(image_file, output_path, dmsp_files, dmsp_cache):
 
     orbit = int(image_file.stem.split("_")[-1])
     result = process_orbit(image_file, dmsp_files, dmsp_cache)
+    result.attrs.update(dmsp_source_metadata(dmsp_files))
     save_orbit(result, output_path / f"or_{orbit:04d}.nc")
     count = result.sizes["sample"]
     result.close()
@@ -278,12 +285,13 @@ def main():
     dmsp_files = index_dmsp_files(args.dmsp_path)
     if not dmsp_files:
         raise FileNotFoundError(f"No yearly DMSP files found in {args.dmsp_path}")
+    dmsp_signature = dmsp_source_metadata(dmsp_files)["source_dmsp_yearly_signature"]
 
     tasks = []
     for image_file in image_files:
         orbit = int(image_file.stem.split("_")[-1])
         output_file = args.output_path / f"or_{orbit:04d}.nc"
-        if output_is_complete(output_file, OUTPUT_FIELDS) and not args.overwrite:
+        if output_is_complete(output_file, OUTPUT_FIELDS, required_dmsp_signature=dmsp_signature) and not args.overwrite:
             continue
         tasks.append((image_file, args.output_path))
 

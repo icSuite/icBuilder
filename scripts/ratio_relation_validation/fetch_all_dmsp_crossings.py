@@ -3,6 +3,7 @@
 #%% Imports
 
 import argparse
+from hashlib import sha256
 from multiprocessing import get_context
 from pathlib import Path
 
@@ -75,7 +76,13 @@ DMSP_FIELDS = (
     "electron_mean_energy_fractional_std",
     "electron_total_energy_flux",
     "electron_total_energy_flux_fractional_std",
+    "electron_pedersen_conductance",
+    "electron_hall_conductance",
+    "electron_conductance_valid",
+    "electron_raw_counts_valid",
 )
+DMSP_FLAG_FIELDS = {"electron_conductance_valid", "electron_raw_counts_valid"}
+OUTPUT_FIELDS |= {f"dmsp_{name}" for name in DMSP_FIELDS}
 
 
 #%% DMSP data
@@ -104,6 +111,9 @@ def load_dmsp(files, cache, satellite, start, stop):
             continue
         if filename not in cache:
             cache[filename] = xr.open_dataset(filename)
+            missing = set(DMSP_FIELDS).difference(cache[filename].variables)
+            if missing:
+                raise ValueError(f"{filename} lacks {sorted(missing)}; rebuild the yearly DMSP file with process_dmsp_yearly.py")
         pieces.append(cache[filename].sel(time=slice(start, stop)).load())
 
     if not pieces:
@@ -111,6 +121,21 @@ def load_dmsp(files, cache, satellite, start, stop):
     if len(pieces) == 1:
         return pieces[0]
     return xr.concat(pieces, dim="time").sortby("time")
+
+
+def dmsp_source_metadata(files):
+    """Identify the yearly input collection without hashing large data arrays."""
+
+    paths = sorted(files.values())
+    identities = []
+    for path in paths:
+        stat = path.stat()
+        identities.append(f"{path.resolve()} {stat.st_size} {stat.st_mtime_ns}")
+    return {
+        "source_dmsp_yearly_files": "\n".join(str(path.resolve()) for path in paths),
+        "source_dmsp_yearly_signature": sha256("\n".join(identities).encode()).hexdigest(),
+        "source_dmsp_yearly_signature_basis": "Sorted paths, file sizes and modification times; not a full file-content hash"
+    }
 
 
 #%% CS spatial gate and detector matching
@@ -317,8 +342,9 @@ def append_frame_samples(
         samples[name].append(np.asarray(dmsp[name].values)[finite][contained])
 
     for name in DMSP_FIELDS:
+        dtype = np.int8 if name in DMSP_FLAG_FIELDS else np.float32
         samples[f"dmsp_{name}"].append(
-            np.asarray(dmsp[name].values, dtype=np.float32)[finite][contained]
+            np.asarray(dmsp[name].values, dtype=dtype)[finite][contained]
         )
     return missed
 
@@ -495,6 +521,12 @@ def process_orbit(image_file, cs_file, dmsp_files, dmsp_cache):
 def save_orbit(data, filename):
     """Write one orbit atomically so interrupted runs cannot look complete."""
 
+    for name in DMSP_FLAG_FIELDS:
+        if f"dmsp_{name}" in data:
+            data[f"dmsp_{name}"].attrs.update({"units": "1", "flag_values": np.array([0, 1], dtype=np.int8), "flag_meanings": "invalid valid"})
+    for name in ("electron_pedersen_conductance", "electron_hall_conductance"):
+        if f"dmsp_{name}" in data:
+            data[f"dmsp_{name}"].attrs["units"] = "S"
     filename.parent.mkdir(parents=True, exist_ok=True)
     temporary = filename.with_suffix(filename.suffix + ".partial")
     encoding = {
@@ -507,7 +539,8 @@ def save_orbit(data, filename):
 
 
 def output_is_complete(
-    filename, required_fields=OUTPUT_FIELDS, required_spatial_filter=None
+    filename, required_fields=OUTPUT_FIELDS, required_spatial_filter=None,
+    required_dmsp_signature=None
 ):
     """Return whether an existing orbit contains the completed output fields."""
 
@@ -515,6 +548,8 @@ def output_is_complete(
         return False
     try:
         with xr.open_dataset(filename) as data:
+            if required_dmsp_signature is not None and data.attrs.get("source_dmsp_yearly_signature") != required_dmsp_signature:
+                return False
             if (
                 required_spatial_filter is not None
                 and data.attrs.get("spatial_filter") != required_spatial_filter
@@ -532,6 +567,7 @@ def process_and_save(image_file, cs_file, output_path, dmsp_files, dmsp_cache):
 
     orbit = int(image_file.stem.split("_")[-1])
     result = process_orbit(image_file, cs_file, dmsp_files, dmsp_cache)
+    result.attrs.update(dmsp_source_metadata(dmsp_files))
     save_orbit(result, output_path / f"or_{orbit:04d}.nc")
     count = result.sizes["sample"]
     footprint_misses = int(result.attrs.get("detector_footprint_miss_count", 0))
@@ -599,6 +635,7 @@ def main():
     dmsp_files = index_dmsp_files(args.dmsp_path)
     if not dmsp_files:
         raise FileNotFoundError(f"No yearly DMSP files found in {args.dmsp_path}")
+    dmsp_signature = dmsp_source_metadata(dmsp_files)["source_dmsp_yearly_signature"]
 
     tasks = []
     for image_file in image_files:
@@ -609,7 +646,8 @@ def main():
         output_file = args.output_path / f"or_{orbit:04d}.nc"
         if (
             output_is_complete(
-                output_file, required_spatial_filter=SPATIAL_FILTER
+                output_file, required_spatial_filter=SPATIAL_FILTER,
+                required_dmsp_signature=dmsp_signature
             )
             and not args.overwrite
         ):
