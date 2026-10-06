@@ -1,4 +1,4 @@
-"""Collect DMSP samples matched to fixed-grid CS precipitation products."""
+"""Collect DMSP/CS matches, retaining nominal values and spectral uncertainty."""
 
 #%% Imports
 
@@ -15,6 +15,7 @@ import xarray as xr
 from fetch_all_dmsp_crossings import (
     DMSP_FIELDS,
     DMSP_FLAG_FIELDS,
+    DMSP_COUNT_FIELDS,
     SATELLITES,
     SUPPORT_SECONDS,
     index_dmsp_files,
@@ -111,7 +112,7 @@ def make_samples():
 
 
 def append_frame_samples(samples, image, matcher, frame, satellite, dmsp):
-    """Append one frame/satellite match to ordinary NumPy lists."""
+    """Append matches, including nominal samples with unavailable uncertainty."""
 
     dmsp_mlat = np.asarray(dmsp.mlat.values, dtype=float)
     dmsp_mlt = np.asarray(dmsp.mlt.values, dtype=float)
@@ -143,7 +144,7 @@ def append_frame_samples(samples, image, matcher, frame, satellite, dmsp):
     samples["cs_inside"].append(inside)
 
     for name in DMSP_FIELDS:
-        dtype = np.int8 if name in DMSP_FLAG_FIELDS else np.float32
+        dtype = np.int8 if name in DMSP_FLAG_FIELDS else np.int16 if name in DMSP_COUNT_FIELDS else np.float32
         samples[f"dmsp_{name}"].append(
             np.asarray(dmsp[name].values, dtype=dtype)[finite]
         )

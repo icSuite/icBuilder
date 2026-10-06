@@ -13,7 +13,10 @@ SCRIPT_DIRECTORY = (
 sys.path.insert(0, str(SCRIPT_DIRECTORY))
 
 import fetch_all_dmsp_crossings as fetch
+import fetch_all_dmsp_crossings_cs as fetch_cs
+import ratio_validation as validation
 from ratio_validation import MATCH_COLUMNS
+from ratio_validation_cs import MATCH_COLUMNS as CS_MATCH_COLUMNS
 from ratio_validation_background_comparison import (
     PAIR_KEYS,
     branch_frame,
@@ -30,6 +33,78 @@ class FakeGrid:
     def bin_index(self, longitude, latitude):
         shape = np.asarray(latitude).shape
         return np.zeros(shape, dtype=int), np.zeros(shape, dtype=int)
+
+
+def test_cs_crossing_contract_carries_wic_sza():
+    assert fetch_cs.IMAGE_FIELDS["sza"] == "wic_sza"
+    assert "wic_sza" in fetch_cs.OUTPUT_FIELDS
+    assert "wic_sza" in CS_MATCH_COLUMNS
+
+
+def test_ratio_validation_quality_limits_are_configurable():
+    data = pd.DataFrame({
+        "img_ratio": np.ones(7),
+        "dmsp_electron_mean_energy": np.ones(7),
+        "wic_dza": np.ones(7),
+        "detector_separation_deg": np.full(7, 0.1),
+        "method_valid": np.ones(7, dtype=bool),
+        "dmsp_electron_raw_counts_valid": np.ones(7, dtype=np.int8),
+        "dmsp_electron_mean_energy_fractional_std": [0.1, 0.1, 0.1, 0.1, 0.1, 0.3, 0.1],
+        "dmsp_electron_total_energy_flux_fractional_std": [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.3],
+        "dmsp_electron_total_energy_flux": [1e11, 7e10, 3e11, 1e11, 1e11, 1e11, 1e11],
+        "wic_sza": [120, 120, 120, 100, 160, 120, 120],
+    })
+
+    selected = validation.quality_selection(
+        data,
+        min_flux=8e10,
+        max_flux=2e11,
+        min_sza=105,
+        max_sza=150,
+        max_energy_fractional_uncertainty=0.25,
+        max_flux_fractional_uncertainty=0.2,
+    )
+
+    assert selected.tolist() == [True, False, False, False, False, False, False]
+
+
+def test_ratio_validation_requested_defaults_and_cli_forwarding(monkeypatch):
+    assert validation.MIN_FLUX == 0
+    assert validation.MAX_FLUX == 1e14
+    assert validation.MIN_SZA == 0
+    assert validation.MAX_SZA == 180
+    assert validation.MAX_ENERGY_FRACTIONAL_UNCERTAINTY == 0.25
+    assert validation.MAX_FLUX_FRACTIONAL_UNCERTAINTY == 0.2
+
+    received = {}
+    monkeypatch.setattr(
+        validation,
+        "run",
+        lambda **settings: received.update(settings),
+    )
+    validation.main([
+        "--min-flux", "8e10",
+        "--max-flux", "2e11",
+        "--min-sza", "105",
+        "--max-sza", "150",
+        "--max-energy-fractional-uncertainty", "0.2",
+        "--max-flux-fractional-uncertainty", "0.1",
+    ])
+
+    assert received["min_flux"] == 8e10
+    assert received["max_flux"] == 2e11
+    assert received["min_sza"] == 105
+    assert received["max_sza"] == 150
+    assert received["max_energy_fractional_uncertainty"] == 0.2
+    assert received["max_flux_fractional_uncertainty"] == 0.1
+
+
+def test_ratio_quality_rejects_bad_raw_counts_without_requiring_valid_conductance():
+    data = crossing_data([40., 40., 40.], [110., 110., 110.], [True, True, True])
+    data["dmsp_electron_raw_counts_valid"] = [1., 0., np.nan]
+    data["dmsp_electron_conductance_valid"] = 0
+    data["dmsp_electron_hall_conductance"] = np.nan
+    assert validation.quality_selection(data).tolist() == [True, False, False]
 
 
 class IdentityProjection:
@@ -111,6 +186,10 @@ def dmsp_sample():
     }
     for name in fetch.DMSP_FIELDS:
         values[name] = ("time", [1.0])
+    values["electron_pedersen_conductance_std"] = ("time", [0.2])
+    values["electron_hall_conductance_std"] = ("time", [0.3])
+    values["electron_pedersen_hall_conductance_covariance"] = ("time", [0.04])
+    values["electron_conductance_uncertainty_channel_count"] = ("time", np.array([19], dtype=np.int16))
     return xr.Dataset(values, coords={"time": time})
 
 
@@ -278,6 +357,121 @@ def test_crossing_output_completion_detects_interrupted_file(tmp_path):
     assert not fetch.output_is_complete(filename)
 
 
+def test_crossing_restart_detects_changed_yearly_inputs_including_empty_orbits(tmp_path):
+    yearly = tmp_path / "year.nc"
+    yearly.write_bytes(b"initial yearly inputs")
+    files = {("f13", 2000): yearly}
+    initial = fetch.dmsp_source_metadata(files)
+    output = tmp_path / "or_0001.nc"
+    xr.Dataset(coords={"sample": np.arange(0)}, attrs=initial).to_netcdf(output)
+    assert fetch.output_is_complete(output, required_dmsp_signature=initial["source_dmsp_yearly_signature"])
+    yearly.write_bytes(b"updated corrected yearly inputs")
+    changed = fetch.dmsp_source_metadata(files)
+    assert not fetch.output_is_complete(output, required_dmsp_signature=changed["source_dmsp_yearly_signature"])
+
+
+def test_cs_samples_retain_rejected_conductances_and_integer_flags(tmp_path, monkeypatch):
+    first = dmsp_sample()
+    second = first.assign_coords(time=first.time + np.timedelta64(1, "s")).copy(deep=True)
+    second["electron_raw_counts_valid"][:] = 0
+    second["electron_conductance_valid"][:] = 0
+    second["electron_pedersen_conductance"][:] = np.nan
+    second["electron_hall_conductance"][:] = np.nan
+    second["electron_conductance_uncertainty_valid"][:] = 0
+    second["electron_conductance_uncertainty_channel_count"][:] = 0
+    for name in ("electron_pedersen_conductance_std", "electron_hall_conductance_std", "electron_pedersen_hall_conductance_covariance"):
+        second[name][:] = np.nan
+    dmsp = xr.concat([first, second], dim="time")
+    monkeypatch.setattr(fetch_cs, "nearest_grid_cells", lambda *args: (np.zeros(2, dtype=int), np.zeros(2, dtype=int), np.zeros(2), np.ones(2, dtype=bool)))
+    samples = fetch_cs.make_samples()
+    fetch_cs.append_frame_samples(samples, FakeCSProduct(), None, 0, "f13", dmsp)
+    data = xr.Dataset({name: ("sample", np.concatenate(parts)) for name, parts in samples.items()})
+    output = tmp_path / "or_0001.nc"
+    fetch.save_orbit(data, output)
+    with xr.open_dataset(output) as saved:
+        np.testing.assert_array_equal(saved.dmsp_electron_raw_counts_valid, [1, 0])
+        assert saved.dmsp_electron_raw_counts_valid.dtype == np.int8
+        assert saved.dmsp_electron_hall_conductance.attrs["units"] == "S"
+        assert np.isnan(saved.dmsp_electron_hall_conductance.values[1])
+        assert saved.sizes["sample"] == 2
+
+
+@pytest.mark.parametrize("representation", ["detector", "cs"])
+def test_crossings_retain_nominal_samples_with_missing_spectral_uncertainty(tmp_path, monkeypatch, representation):
+    first = dmsp_sample()
+    second = first.assign_coords(time=first.time + np.timedelta64(1, "s")).copy(deep=True)
+    second["electron_conductance_uncertainty_valid"][:] = 0
+    second["electron_conductance_uncertainty_channel_count"][:] = 0
+    for name in ("electron_pedersen_conductance_std", "electron_hall_conductance_std", "electron_pedersen_hall_conductance_covariance"):
+        second[name][:] = np.nan
+    partial = first.assign_coords(time=first.time + np.timedelta64(2, "s")).copy(deep=True)
+    partial["electron_conductance_uncertainty_channel_count"][:] = 17
+    partial["electron_pedersen_conductance_std"][:] = 0.15
+    partial["electron_hall_conductance_std"][:] = 0.25
+    partial["electron_pedersen_hall_conductance_covariance"][:] = 0.03
+    dmsp = xr.concat([first, second, partial], dim="time")
+    if representation == "detector":
+        use_fake_footprint_match(monkeypatch)
+        monkeypatch.setattr(fetch, "open_product", lambda filename: FakeCSProduct() if Path(filename).parent.name == "cs" else FakeProduct())
+        monkeypatch.setattr(fetch, "load_dmsp", lambda files, cache, satellite, start, stop: dmsp if satellite == "f13" else None)
+        data = fetch.process_orbit(Path("or_0001.nc"), Path("cs/or_0001.nc"), {}, {})
+        required = fetch.OUTPUT_FIELDS
+    else:
+        monkeypatch.setattr(fetch_cs, "nearest_grid_cells", lambda *args: (np.zeros(3, dtype=int), np.zeros(3, dtype=int), np.zeros(3), np.ones(3, dtype=bool)))
+        samples = fetch_cs.make_samples()
+        fetch_cs.append_frame_samples(samples, FakeCSProduct(), None, 0, "f13", dmsp)
+        data = xr.Dataset({name: ("sample", np.concatenate(parts)) for name, parts in samples.items()})
+        required = fetch_cs.OUTPUT_FIELDS
+    output = tmp_path / "or_0001.nc"
+    fetch.save_orbit(data, output)
+    with xr.open_dataset(output) as saved:
+        assert saved.sizes["sample"] == 3
+        np.testing.assert_array_equal(saved.dmsp_electron_conductance_valid, [1, 1, 1])
+        np.testing.assert_array_equal(saved.dmsp_electron_conductance_uncertainty_valid, [1, 0, 1])
+        np.testing.assert_array_equal(saved.dmsp_electron_conductance_uncertainty_channel_count, [19, 0, 17])
+        assert saved.dmsp_electron_conductance_uncertainty_channel_count.dtype == np.int16
+        assert saved.dmsp_electron_conductance_uncertainty_channel_count.attrs["units"] == "1"
+        np.testing.assert_array_equal(saved.dmsp_electron_conductance_uncertainty_channel_count.attrs["valid_range"], [0, 19])
+        assert saved.dmsp_electron_conductance_uncertainty_valid.dtype == np.int8
+        assert saved.dmsp_electron_conductance_uncertainty_valid.attrs["units"] == "1"
+        for name, expected, partial_expected in [("pedersen_conductance_std", 0.2, 0.15), ("hall_conductance_std", 0.3, 0.25), ("pedersen_hall_conductance_covariance", 0.04, 0.03)]:
+            variable = saved[f"dmsp_electron_{name}"]
+            assert variable.values[0] == pytest.approx(expected)
+            assert np.isnan(variable.values[1])
+            assert variable.values[2] == pytest.approx(partial_expected)
+            assert variable.attrs["units"] == ("S2" if "covariance" in name else "S")
+            assert f"dmsp_electron_{name}" in required
+        assert np.isfinite(saved.dmsp_electron_hall_conductance.values).all()
+        assert np.isfinite(saved.dmsp_electron_pedersen_conductance.values).all()
+        assert saved.attrs["dmsp_conductance_uncertainty_method"] == fetch.DMSP_CONDUCTANCE_UNCERTAINTY_METHOD
+        assert "NaN channel-error terms are omitted" in saved.attrs["dmsp_conductance_uncertainty_method"]
+
+
+@pytest.mark.parametrize("module", [fetch, fetch_cs])
+@pytest.mark.parametrize("missing", ["electron_pedersen_conductance_std", "electron_hall_conductance_std", "electron_pedersen_hall_conductance_covariance", "electron_conductance_uncertainty_valid", "electron_conductance_uncertainty_channel_count"])
+def test_crossing_restart_rejects_missing_conductance_uncertainty_fields(tmp_path, module, missing):
+    data = xr.Dataset({name: ("sample", np.ones(2)) for name in module.OUTPUT_FIELDS})
+    output = tmp_path / "or_0001.nc"
+    data.to_netcdf(output)
+    assert fetch.output_is_complete(output, module.OUTPUT_FIELDS)
+    data.drop_vars(f"dmsp_{missing}").to_netcdf(output)
+    assert not fetch.output_is_complete(output, module.OUTPUT_FIELDS)
+
+
+@pytest.mark.parametrize("missing", ["electron_raw_counts_valid", "electron_hall_conductance_std", "electron_conductance_uncertainty_valid", "electron_conductance_uncertainty_channel_count"])
+def test_load_dmsp_requires_corrected_yearly_fields(tmp_path, missing):
+    yearly = tmp_path / "year.nc"
+    data = dmsp_sample().drop_vars(missing)
+    data.to_netcdf(yearly)
+    cache = {}
+    try:
+        with pytest.raises(ValueError, match="rebuild the yearly DMSP file"):
+            fetch.load_dmsp({("f13", 2001): yearly}, cache, "f13", data.time.values[0], data.time.values[0])
+    finally:
+        for dataset in cache.values():
+            dataset.close()
+
+
 def test_save_orbit_keeps_final_file_when_write_is_interrupted(
     tmp_path, monkeypatch
 ):
@@ -313,6 +507,15 @@ def crossing_data(ratios, sza, valid):
         "dmsp_electron_mean_energy_fractional_std": np.full(count, 0.1),
         "dmsp_electron_total_energy_flux": np.full(count, 1e12),
         "dmsp_electron_total_energy_flux_fractional_std": np.full(count, 0.1),
+        "dmsp_electron_pedersen_conductance": np.full(count, 5.0),
+        "dmsp_electron_hall_conductance": np.full(count, 10.0),
+        "dmsp_electron_pedersen_conductance_std": np.full(count, 0.2),
+        "dmsp_electron_hall_conductance_std": np.full(count, 0.3),
+        "dmsp_electron_pedersen_hall_conductance_covariance": np.full(count, 0.04),
+        "dmsp_electron_conductance_uncertainty_valid": np.ones(count, dtype=np.int8),
+        "dmsp_electron_conductance_uncertainty_channel_count": np.full(count, 19, dtype=np.int16),
+        "dmsp_electron_conductance_valid": np.ones(count, dtype=np.int8),
+        "dmsp_electron_raw_counts_valid": np.ones(count, dtype=np.int8),
         "img_wic": np.full(count, 100.0),
         "img_wic_std": np.full(count, 2.0),
         "img_si13": np.full(count, 2.0),

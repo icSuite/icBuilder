@@ -78,10 +78,25 @@ DMSP_FIELDS = (
     "electron_total_energy_flux_fractional_std",
     "electron_pedersen_conductance",
     "electron_hall_conductance",
+    "electron_pedersen_conductance_std",
+    "electron_hall_conductance_std",
+    "electron_pedersen_hall_conductance_covariance",
+    "electron_conductance_uncertainty_valid",
+    "electron_conductance_uncertainty_channel_count",
     "electron_conductance_valid",
     "electron_raw_counts_valid",
 )
-DMSP_FLAG_FIELDS = {"electron_conductance_valid", "electron_raw_counts_valid"}
+DMSP_FLAG_FIELDS = {"electron_conductance_valid", "electron_raw_counts_valid", "electron_conductance_uncertainty_valid"}
+DMSP_COUNT_FIELDS = {"electron_conductance_uncertainty_channel_count"}
+DMSP_CONDUCTANCE_UNCERTAINTY_METHOD = (
+    "First-order propagation of independent differential-energy-flux errors "
+    "in each energy channel at fixed atmosphere and magnetic field; Hall/Pedersen "
+    "covariance retained from the shared measured spectrum. NaN channel-error "
+    "terms are omitted following Redmon et al. (2017); at least one available "
+    "channel error and finite propagation are required. Supplied non-NaN invalid "
+    "errors and singular propagation remain invalid. Model and systematic "
+    "uncertainties are excluded."
+)
 OUTPUT_FIELDS |= {f"dmsp_{name}" for name in DMSP_FIELDS}
 
 
@@ -342,7 +357,7 @@ def append_frame_samples(
         samples[name].append(np.asarray(dmsp[name].values)[finite][contained])
 
     for name in DMSP_FIELDS:
-        dtype = np.int8 if name in DMSP_FLAG_FIELDS else np.float32
+        dtype = np.int8 if name in DMSP_FLAG_FIELDS else np.int16 if name in DMSP_COUNT_FIELDS else np.float32
         samples[f"dmsp_{name}"].append(
             np.asarray(dmsp[name].values, dtype=dtype)[finite][contained]
         )
@@ -524,9 +539,21 @@ def save_orbit(data, filename):
     for name in DMSP_FLAG_FIELDS:
         if f"dmsp_{name}" in data:
             data[f"dmsp_{name}"].attrs.update({"units": "1", "flag_values": np.array([0, 1], dtype=np.int8), "flag_meanings": "invalid valid"})
-    for name in ("electron_pedersen_conductance", "electron_hall_conductance"):
+    for name in ("electron_pedersen_conductance", "electron_hall_conductance", "electron_pedersen_conductance_std", "electron_hall_conductance_std"):
         if f"dmsp_{name}" in data:
             data[f"dmsp_{name}"].attrs["units"] = "S"
+    covariance = "dmsp_electron_pedersen_hall_conductance_covariance"
+    if covariance in data:
+        data[covariance].attrs.update({"units": "S2", "description": "Hall/Pedersen covariance from independent per-channel flux errors shared by both conductances, at fixed atmosphere and magnetic field"})
+    for name in ("electron_pedersen_conductance_std", "electron_hall_conductance_std"):
+        if f"dmsp_{name}" in data:
+            data[f"dmsp_{name}"].attrs["description"] = DMSP_CONDUCTANCE_UNCERTAINTY_METHOD
+    if "dmsp_electron_conductance_uncertainty_valid" in data:
+        data.dmsp_electron_conductance_uncertainty_valid.attrs["description"] = "At least one available channel error and finite propagated Hall/Pedersen standard deviations and covariance; NaN channel errors omitted, supplied invalid errors and singular propagation rejected. Nominal conductance can remain valid when this flag is zero"
+    count = "dmsp_electron_conductance_uncertainty_channel_count"
+    if count in data:
+        data[count].attrs.update({"units": "1", "valid_range": np.array([0, 19], dtype=np.int16), "description": "Number of supplied finite nonnegative channel errors, including zero; NaN terms omitted following Redmon et al. (2017). Negative or infinite supplied errors invalidate uncertainty and do not contribute to this count. Count alone does not certify valid propagation"})
+    data.attrs["dmsp_conductance_uncertainty_method"] = DMSP_CONDUCTANCE_UNCERTAINTY_METHOD
     filename.parent.mkdir(parents=True, exist_ok=True)
     temporary = filename.with_suffix(filename.suffix + ".partial")
     encoding = {
