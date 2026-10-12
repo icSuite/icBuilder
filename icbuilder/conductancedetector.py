@@ -13,7 +13,8 @@ from .fuvdetector import SOURCE_TIME_DECODING, source_identity
 from .precipitationdetector import (
     COUNT_UNCERTAINTY_MODE,
     PREPROCESSING_METADATA_ATTRIBUTES,
-    PRECIPITATION_METHOD,
+    PRECIPITATION_METHODS,
+    ELECTRON_METADATA_ATTRIBUTES,
     SCHEMA_VERSION as PRECIPITATION_SCHEMA_VERSION,
 )
 
@@ -57,13 +58,13 @@ def load_precipitation_detector(filename):
             source.product_type != "precipitation_detector"
             or source.representation != "detector"
             or int(source.schema_version) != PRECIPITATION_SCHEMA_VERSION
-            or source.method != PRECIPITATION_METHOD
+            or source.method not in PRECIPITATION_METHODS
             or source.count_uncertainty_mode != COUNT_UNCERTAINTY_MODE
             or source.source_fuv_detector_time_decoding != SOURCE_TIME_DECODING
         ):
             raise ValueError(
                 f"{filename} is not a supported schema-"
-                f"{PRECIPITATION_SCHEMA_VERSION} {PRECIPITATION_METHOD} "
+                f"{PRECIPITATION_SCHEMA_VERSION} supported-method "
                 "precipitation_detector product"
             )
 
@@ -105,6 +106,10 @@ def load_precipitation_detector(filename):
             ).copy(),
             "kp_provenance": dict(source.kp_provenance),
         }
+        if source.method == "hardy":
+            for name in ELECTRON_METADATA_ATTRIBUTES:
+                product[name] = source.attrs[name]
+            product["E0_response_range_flag"] = np.asarray(source.read("E0_response_range_flag"), dtype=np.int8)
         for name in PREPROCESSING_METADATA_ATTRIBUTES:
             product[name] = source.attrs[name]
         if product["proton_energy_model"] == "constant":
@@ -161,6 +166,10 @@ class ConductanceDetector:
         self.software_version = str(software_version)
 
         self.precipitation_method = precipitation["method"]
+        if self.precipitation_method == "hardy":
+            for name in ELECTRON_METADATA_ATTRIBUTES:
+                setattr(self, name, precipitation[name])
+            self.E0_response_range_flag = precipitation["E0_response_range_flag"].copy()
         self.count_source = str(precipitation["count_source"])
         self.smoothed = bool(int(precipitation["smoothed"]))
         self.smoothing_method = str(precipitation["smoothing_method"])
@@ -323,6 +332,9 @@ class ConductanceDetector:
                 self.conductance_uncertainty_method
             )
             nc.precipitation_method = self.precipitation_method
+            if self.precipitation_method == "hardy":
+                for name in ELECTRON_METADATA_ATTRIBUTES:
+                    nc.setncattr(name, getattr(self, name))
             nc.count_source = self.count_source
             nc.smoothed = np.int8(self.smoothed)
             nc.smoothing_method = self.smoothing_method
@@ -458,6 +470,12 @@ class ConductanceDetector:
                 )
                 variable[:] = values
                 variable.units = units
+
+            if self.precipitation_method == "hardy":
+                flag = nc.createVariable("E0_response_range_flag", "i1", dimensions, zlib=True)
+                flag[:] = self.E0_response_range_flag
+                flag.flag_values = np.asarray([-1, 0, 1, 2], dtype=np.int8)
+                flag.flag_meanings = "unavailable in_range below above"
 
             for name in (
                 "method_valid", "conductance_valid",

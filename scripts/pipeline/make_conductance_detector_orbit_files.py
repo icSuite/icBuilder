@@ -13,6 +13,8 @@ from icreader import open_product
 from tqdm import tqdm
 from tqdm.contrib.concurrent import process_map
 
+from icbuilder.precipitationdetector import ELECTRON_METADATA_ATTRIBUTES
+
 from icbuilder.conductancedetector import (
     CONDUCTANCE_MODEL,
     SCHEMA_VERSION,
@@ -71,6 +73,16 @@ def conductance_detector_file_status(
                 != int(source.schema_version)
             ):
                 return "mismatch"
+            if source.method == "hardy":
+                for name in ELECTRON_METADATA_ATTRIBUTES:
+                    if name not in product.attrs:
+                        return "invalid"
+                    if product.attrs[name] != source.attrs[name]:
+                        return "mismatch"
+                if not hasattr(product, "E0_response_range_flag"):
+                    return "invalid"
+                if product.E0_response_range_flag.shape != product.shape:
+                    return "invalid"
             if source.proton_energy_model == "constant" and (
                 not np.isclose(
                     product.proton_energy_constant,

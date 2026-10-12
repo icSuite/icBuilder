@@ -1,6 +1,243 @@
 # Decision Log
 
-Last reviewed: 2026-09-21
+Last reviewed: 2026-10-11
+
+## 2026-10-11 — Optional full spatial Hardy electron energy
+
+**Confirmed by the user:** implement the optional Hardy electron mean-energy
+model using the supplied functional paper and each pixel's MLAT, MLT and Kp.
+Electron/proton choices remain independent; no default replacement requested.
+
+**Implementation choices:** correct the Fourier phase to 24 h periodicity;
+interpolate evaluated log10 flux for fractional Kp; expose the Northern 50–90°
+source domain and Modified Apex approximation. Retain raw E0 and flag endpoint
+WIC response evaluation. Propagate measurement errors conditional on fixed
+Hardy energy, explicitly excluding prediction error. These conventions are
+documented implementation choices, not newly confirmed scientific policies.
+Broader particle/coordinate validation precedes production model selection.
+
+
+## 2026-10-09 — Plan dynamic orbit-specific IMAGE response curves
+
+**Confirmed by the user:** add a dynamic MSIS/GLOW and sensor-response pipeline
+to the TODO list. Generate orbit-specific WIC/SI13 ratio relations conditioned
+on F10.7, F10.7a, Ap, geographic latitude/longitude, DZA and UT. Reduce cost
+through occupied model-evaluation bins, with daily solar and daily/3-hourly
+geomagnetic drivers. Accept GLOW's supplied excitation physics.
+
+The user hopes Benoit Hubert will supply DZA-dependent sensor response curves;
+receipt and exact content remain unconfirmed. Bin sizes, calibration inputs,
+runtime/accuracy and production adoption are unresolved. This is planned work,
+not an implementation or an instruction to launch a full-corpus regeneration.
+[[TODO]] owns the checklist; [[Audit - Published IMAGE Ratio Limitations]] owns
+the source/provenance evidence.
+
+## 2026-10-06 — Default real-observation STD floor in the CS spline prototype
+
+**Confirmed by the user:** lower-clip observed uncertainty to1 S by default
+in fit_conductance_cs_splines.py and expose the value. Implemented
+--minimum-std;0 disables. Use max(STD,floor) for valid real observations,
+preserving raw dH/dP, invalid masks, quality convention and separate artificial
+corner STD. Uniform weighting is unchanged. This local fitting policy is not
+a correction of shared physics or approval of a calibrated error model.
+67 focused tests and a seven-frame real execution gate pass; intended40-control
+fit-quality evaluation remains pending. [[Processing Pipeline]] owns details.
+
+## 2026-10-06 — Add paired WIC/SI13 conductance diagnostics
+
+**Confirmed by the user:** implement the joint Hall/Pedersen analysis discussed
+in the conversation. Retain independent camera analyses and use existing paired
+crossings. Begin with fixed count-plane conditional quantiles and maps/slices,
+paired measurement-error/orbit resampling, and compare single/joint median
+predictors on identical wholly held-out orbit data. No Frey curve or ratio
+cut. Sparse support and unavailable scores must remain explicit.
+
+**Implementation choices:** default20×20 count cells,20 samples/3 distinct
+original orbits,5 held-out folds; configurable. Assume zero cross-camera error
+covariance because it is unavailable, and record that limitation. This is a
+diagnostic empirical relation, not approval of a new production conductance
+model or proof of improved real-data prediction. Method/evidence owner:
+[[DMSP Spectrum Conductance Validation]].
+
+## 2026-10-06 — Provide separate detector and CS conductance entry points
+
+User identified the absent detector conductance analysis. Add
+conductance_validation.py for detector crossings while retaining the existing
+_cs entry point. Share count binning and analytical-error/block-bootstrap code,
+with explicit representation-specific geometry and error keys. Detector camera
+draws share a pixel/frame, not a CS cell. Keep independent camera selection,
+document inherited common support and retain separate detector/CS output paths.
+
+## 2026-10-06 — Restore legacy weight scaling and evaluate plots every30s
+
+**Confirmed by the user:** expose wscaling and make figures default to30s
+cadence, holding observations unchanged while the spline updates. The previous
+identity-only ridge did not implement the legacy batch default.
+
+**Implementation:** enable normalized coefficient-average method_quality_weight
+regularization by default, matching the actual legacy LTL_diag calculation;
+allow --wscaling false/--no-wscaling. Use padded quality0.5 and legacy NaN->1.
+Apply the same precision matrix to posterior variance, including predictions
+between measurement timestamps. Plot observations/STD use latest-at-or-before
+holding, without interpolating them; cadence is anchored to the first selected
+measurement and stays within the fitted interval. Save output times, held
+indices and continuous fit/variance/STD. --plot-cadence exposes seconds.
+
+## 2026-10-06 — Constrain unsupported spline corners to zero
+
+**Confirmed by the user:** pad unsupported corners with zero conductance and
+low uncertainty; use0.5 for padded method_quality_weight if used. Separate
+Hall/Pedersen figures have2×2 panels (corrected from the original4×4 request),
+observed/fit conductance above observed/posterior STD, without colorbars.
+
+**Implementation choice:** identify corner-connected cells without any valid
+finite nonnegative H/P over the full input orbit, not just selected frames.
+Use configurable0.1S STD; retain raw observations/errors separately and label
+padding in masks and plots. Exclude artificial constraints from residual RMS.
+Stored quality is0.5 on padding; quality remains unused in fitting. The posterior
+is conditional on this imposed boundary assumption. Sensitivity comparison can
+disable padding. This does not fill transient or isolated interior gaps.
+
+## 2026-10-06 — Add spline posterior model variance
+
+**Confirmed by the user:** add model variance to the single-orbit conductance_cs
+spline prototype. Reuse the fitted sparse precision matrix and save separate
+Hall/Pedersen fitted-field variance and STD alongside the unchanged fits.
+
+**Implementation choice:** estimate diag(G A^-1 G.T) with512 batched Gaussian
+coefficient draws by default, with exact evaluation available for small checks.
+Record sampling precision and seed. Interpret this as the Gaussian posterior
+conditional on independent observation errors and the coefficient ridge prior;
+it excludes new-observation noise and model discrepancy. Uniform fits assume
+1S measurement STD. This remains a diagnostic prototype, not a production
+spline-format migration or full-orbit scientific validation.
+
+## 2026-10-06 — Analyze corrected SI13 alongside WIC
+
+**Confirmed by the user:** add SI13 to the conductance-validation script.
+Run Hall/Pedersen versus corrected SI13 counts using the same analytical DMSP
+errors and orbit bootstrap as WIC. Each camera uses its own counts, coverage
+and count-error cohort, preserving WIC selection. Reuse existing crossing
+fields; retain separate per-camera outputs and explicit camera provenance.
+
+## 2026-10-06 — Follow published DMSP NaN-error omission
+
+**Confirmed by the user:** follow the published method and ignore NaN channel-
+error terms. This supersedes our strict complete-channel-error policy and the
+unselected reversion/low-count/moment alternatives. Retain the full nominal
+spectrum, propagate available finite nonnegative errors with P/H covariance,
+and save channel availability count plus separate uncertainty validity.
+All-missing errors remain unavailable; supplied invalid errors and singular
+propagation remain invalid. Missing terms are omitted, not a recovered noise
+model. Source/method evidence and end-to-end checks are owned by icBuilder's
+DMSP Spectrum Conductance Validation note.
+
+## 2026-10-06 — Propagate DMSP spectral errors analytically
+
+**Confirmed by the user:** Implement the proposed analytical propagation,
+with independent numerical/Monte Carlo checks, rather than per-record production
+Monte Carlo. Reuse the spectrum/MSIS calculation and retain nominal P/H.
+
+**Implementation:** Propagate supplied source per-channel fractional errors
+through ionization and equilibrium electron density to P/H standard deviations
+and joint covariance. Assume independent energy-channel errors explicitly;
+source STD contains its reported calibration contribution, but add no extra
+common calibration, model, atmosphere, B or energy errors. Missing/negative
+source errors or singular zero-ionization derivatives invalidate only errors.
+Keep source low-count NaNs; do not substitute zero or invent a count-error model.
+Separate validity flags and uncertainty-cohort diagnostics accompany saved
+yearly/crossing outputs and joint Gaussian analysis draws.
+
+The source intentionally leaves errors undefined below one corrected count,
+so this is incomplete coverage: Jan1 F13 has889 uncertainty-valid of20,316
+nominal-valid spectra. Extending to censored channels requires a separate
+scientific low-count model. No such model or production corpus rerun was adopted.
+
+## 2026-10-05 — Reuse MSIS profiles within spatial and hourly bins
+
+**Confirmed by the user:** Use 2° geodetic latitude, 5° geodetic longitude,
+and 1-hour UTC bins to reduce repeated MSIS evaluation of 1-second DMSP data.
+
+**Implementation:** For each occupied bin within a satellite-day, evaluate
+the neutral profile at its geographic cell center and median valid-sample
+time. Keep each spectrum and IGRF magnitude individual, share the neutral
+profile/deposition kernel, and record the representative coordinates/time.
+Retain per-measurement mode for sensitivity comparisons; record bin widths
+in yearly provenance and restart identity. A single-day benchmark reduces
+20,316 profiles to 868 and full processing from about 49 s to 6.3 s. This
+does not establish all-season approximation accuracy.
+
+**Equivalent speedups:** Keep those bin dimensions, and reduce conversion/
+wrapper overhead using exact integral CDF_EPOCH arithmetic, vectorized ApexPy
+reference-height algebra and the same C gtd7 backend. Serial old/new comparisons
+match every scientific array exactly; fifty focused index/integration tests
+pass. Two additional seasonal/disturbed challenge samples support the selected
+resolution without establishing a universal binning-error bound.
+
+## 2026-10-05 — Add spectrum-inferred DMSP conductance to yearly files
+
+**Confirmed by the user:** Translate the provided IDL spectrum calculation
+into icPhysics and integrate it into `process_dmsp_yearly.py`, with a
+reference magnetic-field model such as IGRF. Investigate the missing MSIS
+table before interpreting or regenerating the analysis dataset.
+
+**Implementation:** Keep physics numerical and array-based in icPhysics;
+keep CDF handling, footprint mapping, IGRF, atmosphere generation and yearly
+I/O in icBuilder. Retain model and driving-input provenance.
+
+**Follow-up implementation:** The user requested local historical index
+series for measurement-specific MSIS. Use daily observed prior-day F10.7,
+current-day centered observed 81-day F10.7 and daily Ap from CelesTrak, stored
+locally with source OBS/INT qualifiers and hashes. NRLMSISE-00 profiles vary
+at each measurement time/footprint; explicit fixed profiles remain available.
+This is a successor-model workflow, not recovery of the original MSIS-90
+table. No IMAGE conductance estimator changed.
+See [[DMSP Spectrum Conductance Validation]].
+
+## 2026-10-01 — Apply optional fixed Gaussian smoothing inside Product 2
+
+**Decision:** Keep Product 1 as the unsmoothed coregistered observation
+boundary. Apply optional per-sensor Gaussian smoothing in detector Product 2,
+enabled by default with WIC sigma 0.8, SI12 disabled, and SI13 sigma 1.2 in WIC
+detector pixels. Do not create a separate smoothed observation product. Remove
+the experimental boxcar and adaptive processing paths.
+
+Convert each sensor's fuvpy background-fit weight to an auroral residual score
+as `1 - dgweight`. Propagate that score for each smoothed sensor as a
+normalized Gaussian-weighted geometric product over the same contributors,
+using a recorded `1e-6` floor, and then multiply the working WIC, SI12, and
+SI13 scores. Store only the combined `method_quality_weight` in Product 2;
+retain the separate source weights in Product 1. Keep unsubtracted-product
+quality uniform because the background-fit Tukey weight does not describe
+those counts.
+
+**Rationale:** Fixed smoothing is cheap enough to repeat in Product 2 and
+avoids another stored product. Sensor multiplication preserves the intended
+strict all-sensors corroboration requirement, while the geometric spatial
+propagation prevents a weak auroral score from being spread as readily as it
+would by an arithmetic mean and does not depend on the number of kernel pixels
+as a raw product would. The schema-4 boundary and
+explicit provenance prevent old unsmoothed/schema-3 products from being
+silently treated as the new default.
+
+**Downstream amendment:** Carry the complete count-source, smoothing,
+variance-propagation, and Tukey-weight recipe into detector Product 3 and
+Product-3 CS. Bump those contracts to schemas 3 and 2, respectively, while
+keeping their readers compatible with legacy schemas 2 and 1. The combined
+quality field is physically carried downstream, so its construction must be
+understandable without reopening Product 2.
+
+**Support amendment:** Define `method_quality_weight` wherever all three
+working sensor weights have finite common detector support, independently of
+ratio, E0, Fe, or conductance success. Reduce it into Product-2 CS and
+Product-3 CS on that same independent finite support. Retrieval and
+conductance validity remain separate masks.
+
+**Semantic amendment:** `method_quality_weight` is high-is-auroral, not the
+original background-fit inlier weight. icAnalyzer must use it in the stored
+orientation and must not apply another `1 - weight` transformation. Because
+artifacts can also receive low fuvpy weights, interpret it as a corroborated
+three-sensor residual score rather than a calibrated probability.
 
 ## 2026-09-20 — Freeze detector CS post-processing at 46 by 46
 

@@ -13,11 +13,13 @@ from icphysics import (
     PROTON_RESPONSE_ENERGY_RANGE,
     hardy_ion_precipitation,
     precipitation_from_ratio,
+    precipitation_from_hardy,
     precipitation_from_zhang_paxton,
     proton_correct_images,
 )
 
 from .grids import grid_mlt
+from .precipitationdetector import ELECTRON_METADATA_ATTRIBUTES, hardy_electron_metadata
 from .kp import load_gfz_kp, match_gfz_kp
 
 
@@ -35,7 +37,7 @@ def load_binned_image(image):
 TIME_TOLERANCE = timedelta(seconds=2)
 TIME_MATCH_RULE = (
     "Image ratio matches WIC, SI12, and SI13 one-to-one. Zhang-Paxton matches "
-    "WIC and SI12 one-to-one, then attaches SI13 without reducing frame "
+    "WIC and SI12 one-to-one, as does Hardy, then attaches SI13 without reducing frame "
     "support. Every accepted sensor group spans at most 2 seconds; the latest "
     "required-sensor timestamp is the product time. Missing SI13 index is -1."
 )
@@ -403,13 +405,14 @@ class PrecipitationImage:
         source_products=None,
         physics_provenance=None):
         
-        if method not in ("image_ratio", "zhang_paxton"):
-            raise ValueError("method must be 'image_ratio' or 'zhang_paxton'")
+        if method not in ("image_ratio", "zhang_paxton", "hardy"):
+            raise ValueError("method must be image_ratio, zhang_paxton, or hardy")
         if proton_flux_source != PROTON_FLUX_SOURCE:
             raise ValueError("proton_flux_source must currently be 'SI12'")
         if physics_function is None:
             physics_function = {
                 "image_ratio": precipitation_from_ratio,
+                "hardy": precipitation_from_hardy,
                 "zhang_paxton": precipitation_from_zhang_paxton,
             }[method]
 
@@ -433,9 +436,13 @@ class PrecipitationImage:
             kp_series = load_gfz_kp()
 
         self.method = method
+        if method == "hardy":
+            for name, value in hardy_electron_metadata(HARDY_COORDINATE_NOTE).items():
+                setattr(self, name, value)
         self.grid = deepcopy(wic.grid)
         self.proton_flux_source = str(proton_flux_source)
         self.proton_energy_model = str(proton_energy_model)
+        self.proton_response_energy_min, self.proton_response_energy_max = PROTON_RESPONSE_ENERGY_RANGE
         self.proton_energy_constant = float(proton_energy)
         self.proton_energy_uncertainty_constant = float(proton_energy_uncertainty)
         self.source_products = input_files
@@ -495,7 +502,8 @@ class PrecipitationImage:
                                           si12=self.si12, dsi12=self.dsi12,
                                           si13=self.si13, dsi13=self.dsi13,
                                           proton_energy=self.Ep,
-                                          proton_energy_uncertainty=self.dEp)
+                                          proton_energy_uncertainty=self.dEp,
+                                          **({"uncertainty_mode": "measurement"} if method == "hardy" else {}))
         
         for name, values in corrected.items():
             setattr(self, name, np.asarray(values, dtype=float).copy())
@@ -504,6 +512,8 @@ class PrecipitationImage:
         
         if method == "image_ratio":
             inputs.update(si13_corrected=self.si13_corrected, dsi13_corrected=self.dsi13_corrected)
+        elif method == "hardy":
+            inputs.update(kp=self.kp[:, None, None], mlt=grid_mlt(self.grid), mlat=np.asarray(self.grid.lat))
         else:
             inputs.update(kp=self.kp, mlt=grid_mlt(self.grid))
 
@@ -531,6 +541,11 @@ class PrecipitationImage:
                     raise ValueError(f"{name} must have shape {self.shape}")
                 setattr(self, name, values.copy())
 
+        if method == "hardy":
+            self.E0_response_range_flag = np.asarray(result["E0_response_range_flag"], dtype=np.int8).copy()
+            if self.E0_response_range_flag.shape != self.shape:
+                raise ValueError(f"E0_response_range_flag must have shape {self.shape}")
+
         self.sensor_provenance = {}
         for name, sensor in (("wic", wic), ("si12", si12), ("si13", si13)):
             if sensor is None:
@@ -551,6 +566,9 @@ class PrecipitationImage:
             nc.product_type = "precipitation"
             nc.schema_version = 2
             nc.method = self.method
+            if self.method == "hardy":
+                for name in ELECTRON_METADATA_ATTRIBUTES:
+                    nc.setncattr(name, getattr(self, name))
             nc.proton_flux_source = self.proton_flux_source
             nc.proton_energy_model = self.proton_energy_model
             nc.proton_energy_uncertainty_method = self.proton_energy_uncertainty_method
@@ -639,6 +657,12 @@ class PrecipitationImage:
                 )
                 variable[:] = data
                 variable.units = units
+
+            if self.method == "hardy":
+                flag = nc.createVariable("E0_response_range_flag", "i1", ("time", "dim1", "dim2"), zlib=True)
+                flag[:] = self.E0_response_range_flag
+                flag.flag_values = np.asarray([-1, 0, 1, 2], dtype=np.int8)
+                flag.flag_meanings = "unavailable in_range below above"
 
             clipped = nc.createVariable(
                 "Ep_clipping_flag", "i1", ("time", "dim1", "dim2"), zlib=True

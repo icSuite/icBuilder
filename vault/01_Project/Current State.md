@@ -1,9 +1,732 @@
 # Current State
 
-Last reviewed: 2026-09-25
-Repository snapshot: `modular_pipeline` at `d9a03c3`
-Worktree state: regenerated example products, debugging additions, existing
-vault changes, and the frame-quality review workflow are uncommitted
+Last reviewed: 2026-10-11 (Hardy electron implementation; prior checkpoints retained)
+Repository snapshot: `modular_pipeline` at `eecefeb`
+Worktree state: pre-existing modified example products, validation/debugging
+files, tests, and vault notes remain. Yearly DMSP spectrum integration, model
+helper, optional dependencies, tests, and documentation are uncommitted.
+
+## Hardy electron option implemented
+
+The user selected full spatial MLAT/MLT/Kp evaluation and requested
+implementation using the supplied 1987 paper. Detector and bin-first Product 2
+now accept `method="hardy"`; runners expose `--precipitation-method hardy`.
+Proton choice remains independent; SI13 is optional diagnostic support.
+Corrected WIC still supplies event Fe. Product 3, paired CS products, readers
+and restart checks preserve model provenance and response-range diagnostics.
+[[Hardy Electron Mean Energy - Implementation Plan]] owns implementation,
+source conventions, verification and remaining scientific gates.
+
+Real orbit 0085 passed Product 2/3/CS in scratch: 122 frames, 756,975 nominal and
+conditional-error-valid detector pixels; 9,071 energies below WIC's 0.2 keV
+response limit. Raw E0 is retained; endpoint response behavior is flagged.
+The particle comparison tools include an uncalibrated Hardy model with common
+complete temporal support. Real two-orbit diagnostic execution passes, but
+is not a model-selection result. Existing image-ratio output parity is exact
+across 800 arrays/attributes. Final builder checks: 75 focused integration/
+restart tests plus 18 CS/particle-diagnostic tests pass. icPhysics full suite
+72 passes; icReader full suite 46 passes. Restart shape checks use lazy
+metadata, and all three real-orbit runners report one complete/zero pending.
+
+Next: broader accepted particle/coordinate/morphology validation before
+production selection. Hardy prediction error is excluded from conditional
+measurement uncertainties. Defaults, existing work and production corpus are
+preserved; all changes remain uncommitted.
+
+## Dynamic response pipeline added to TODO
+
+Confirmed2026-10-09: plan orbit-specific WIC/SI13 response and ratio tables
+conditioned on F10.7, F10.7a, Ap, geographic latitude/longitude, DZA and UT.
+Use occupied calculation bins and reuse atmospheric profiles across DZA bins;
+bin sizes remain to be benchmarked. GLOW's supplied excitation physics is
+accepted. The user hopes Benoit Hubert will provide DZA-dependent sensor
+curves; delivery/content are unconfirmed. [[TODO]] owns the actionable checklist.
+Next: inspect the response curves and establish a reference benchmark. No
+dynamic pipeline implementation or production-model replacement performed.
+
+## Published ratio limitations audited
+
+Source audit2026-10-09 confirms direct historical admissions of wrong ratio-
+derived energy/conductance values. Coumans2004§6–7 reports false energy peaks,
+large comparison errors and excessive conductances, tentatively linked to
+background subtraction. Frey2003 reports high-energy bias from a disturbed
+atmosphere; Meurant2003 reports unrealistic retrievals from unsuitable proton
+correction. All also retain useful morphology/selected successful validation;
+a universal rejection is not their published conclusion. The newly present
+Hubert2001 PDF covers related proton energy/flux ambiguity, not a direct
+WIC/SI13 inverse-conductance validation.
+[[Audit - Published IMAGE Ratio Limitations]] owns verified pages/paragraphs,
+causal distinctions and counterevidence. literature/README.md now indexes that
+paper/audit. No processing/model-policy change, PDF download or code edits.
+Next: use those precise citations when describing retrieval limitations;
+establish the dominant cause in our data separately. Other work below was
+not re-executed as part of this literature-only checkpoint.
+
+Follow-up source/code tracing confirms atmosphere is embedded in static Frey
+response tables, with no dynamic composition correction in our ratio branch
+or the recovered FUVVIEW3 calibration source. Frey's storm adjustment lacks
+a reproducible published prescription. A proton-table sign calculation shows
+larger assumed proton energy can increase an already-high ratio; Meurant's
+opposite direction is case-specific. LBH cascading adds excitation pathways,
+not a universal30% correction to WIC counts. The audit owns details/examples.
+Upstream qualification: no explicit composition/absorption correction found,
+but the original full ground/onboard chain has not been audited. Published
+flat-field generation uses an empirical quiet-dayglow model, an indirect
+atmospheric dependence in calibration prepared before FUVVIEW3. Assumed
+emission height is a separate geometric input.
+Response generation traced: GLOW electron transport plus MSIS-90, absorption,
+nadir integration and calibrated camera spectral responses produce E1/E3.
+Cited Hubert2002 gives concrete December24/16:30UT/65deg/0deg and
+F10.7A216/F10.7205/Ap6 inputs; exact identity with Frey's tables remains
+unverified. Published nodes are mean energies, despite characteristic-energy
+comments in Python. The audit owns reproducibility limits and conventions.
+Public NCAR GLOW availability verified; excitation cross sections are supplied
+in its source, so they are not a separate missing baseline dataset. Numerical
+IMAGE camera spectral responses and historical configuration remain unverified.
+No GLOW installation or response-model run yet.
+
+## Joint WIC/SI13 conductance diagnostics added
+
+**Confirmed by the user:** implement the paired conductance relation.
+Both conductance_validation entry points now add joint Hall/Pedersen maps,
+fixed-WIC slices, paired camera/error/block-bootstrap resampling and an
+orbit-held-out WIC-only/SI13-only/joint comparison. Default20×20 count cells
+require20 samples and3 distinct original orbits. Missing support stays blank;
+held-out scores use common rows with no extrapolation. Camera covariance is
+assumed zero and explicitly recorded. Independent camera outputs are preserved.
+54 tests pass; one transferred detector orbit gives2773 paired/error-eligible
+rows and verified outputs. Prior single-camera numbers are unchanged exactly.
+The daylit scratch gate relaxed selection and support thresholds; it is execution
+evidence. Positive predictive gain has not been established.
+[[DMSP Spectrum Conductance Validation]] owns method/output/evidence details.
+Direct error-comparison PNG/PDF now show pooled MAE/RMSE and equal-orbit MAE
+for all three models, with percentage changes. --comparison-only reads an
+existing joint NetCDF without loading crossings or rerunning resampling.
+A frozen default-file minSZA0 run has153535 selected rows/396 orbits and149384
+common test rows. Pedersen pooled MAE/RMSE improve only0.397%/0.257%; Hall
+worsens0.602%/0.675%; equal-orbit MAE worsens for both. This binned comparison
+shows no consistent gain. The shared default file was overwritten during the
+check; snapshot and reviewed plot are under /tmp/icbuilder_joint_comparison_20261006.
+User's named DMSP_std_sza_105 directory is not yet located; full path requested.
+Next: inspect that specific run before attributing these minSZA0 results to it.
+No full job, production NetCDF overwrite or commit.
+
+## Single-orbit CS spline prototype revived
+
+Optional movie PNG sequence added2026-10-07 in the side conversation:
+--movie true with original input-frame bounds and independent --movie-step
+(default5s), leaving coarse plots/fit unchanged. Clean2×2 titles, hidden axes,
+fixed interval colour scales, existing posterior STD map titled Model variance
+and separate hall/pedersen
+PNG folders; no MP4 encoding.78 spline tests and a small real interval pass.
+[[Processing Pipeline]] and README own the contract. No full-orbit run.
+
+**User-requested default (2026-10-06):** uncertainty-weighted real-observation
+STD is now lower-clipped to1 S in fit_conductance_cs_splines.py. CLI
+--minimum-std changes the floor;0 restores unfloored weighting. This is
+max(STD,floor), not quadrature discrepancy. Raw dH/dP and their plot panels,
+invalid masks, deliberate quality complement and artificial corner STD remain
+unchanged. Effective H/P_fit_std, floor and affected counts are serialized.
+Uniform weighting ignores this option. All67 focused tests pass; seven real
+orbit150 frames199:206 verify5,092 H/5,470 P floored observations and294
+unchanged0.1 S constraints/component. Scratch /tmp/icbuilder-spline-floor-D0uPuq.
+No full-orbit refit or conference-file overwrite; smoother-model and saturated
+energy-uncertainty repairs remain unimplemented. Refit the user's chosen
+interval/output to evaluate this default scientifically.
+
+**Latest fix (2026-10-06):** selected frames without usable real H/P observations
+are removed before spline construction, quality averaging and corner padding.
+Retained UTC times preserve gaps; source_frame_index records original indices.
+Each component gets padding only on frames with usable observations of that
+component. Orbit150 has four empty weighted frames:69,111,209,234. A real
+109:115 interval drops111 and fits five frames with210 constraints/component.
+All55 focused tests pass; stale quality tests now reflect the existing1-Q
+transform without changing that transform. No full-orbit rerun. See
+[[Processing Pipeline]] for filtering and padding semantics.
+
+Posterior STD now has its own finite nonnegative99th-percentile color scale in
+both component figures, independent of observed STD. Titles report each scale;
+conductance panels still share their observed-value scale. All55 tests pass.
+
+**Latest diagnosis:** user's Hall plot115 strongly suppresses the oval.
+The16-control spatial basis with inverse-variance weights is dominated by
+low-STD background. At the same target time, a controlled interval gives median
+bright-pixel predictions0.185S (ncp16 weighted),14.68S (ncp30 weighted) and
+12.08S (ncp16 uniform), versus observed13.51S. Lowering ridge from-6 to-12
+barely changes the weighted coarse fit. Saved-coefficient evaluation is correct;
+posterior STD excludes this model mismatch. Recommend ncp30 and inspect
+resolution/residuals. No error floor/default/source-code changes made in audit.
+The conference NetCDF contains all257 frames at120s cadence despite its
+frames_50_99 filename. [[Processing Pipeline]] owns exact evidence/scratch paths.
+
+scripts/debugging/fit_conductance_cs_splines.py fits independent H/P tensor
+B-splines to one conductance_cs orbit through icReader and the existing sparse
+Solver. Defaults ncp16, degrees3/2, exact5-minute time knots, log10 ridge=-6,
+own positive dH/dP weights,512 posterior draws/batch16. Uniform error weights
+and exact posterior variance remain selectable. No legacy batch/class changes.
+
+**Confirmed by the user:** add legacy wscaling and default30s plot cadence.
+wscaling is now enabled by default, using normalized coefficient-averaged
+quality exactly as legacy, including NaN->1 and padded quality0.5. Current live
+code now complements input method_quality_weight before averaging; this differs
+from the earlier direct-quality test checkpoint and is preserved in the audit.
+--wscaling false/--no-wscaling disables it. Missing input quality requires
+explicitly disabling it. Saved regularization_diagonal identifies the penalty.
+Both fits and posterior variance use the same scaled precision matrix.
+
+Separate Hall/Pedersen2×2 PNG sets now evaluate continuous spline predictions
+and posterior STD every30s (--plot-cadence); observed conductance/STD are held
+at the latest measurement. --plot-frame selects an output-cadence frame.
+Saved plot_time, plot_observation_index and H/P_plot_fit/variance/STD preserve
+this calculation. Batched coefficient draws and temporal chunks avoid building
+a full30s tensor design. Titles show model and held-observation timestamps.
+No colorbars. Source observations/errors remain intact. Unsupported corner zero
+constraints have configurable0.1S STD; full-orbit support identifies the mask.
+Residual RMS excludes padding. Diagnostic xarray schema, not legacy spline schema.
+
+The earlier version passed38 focused checks, including comparison against the actual legacy quality
+penalty, independent dense weighted fits/covariance, continuous-time predictions
+and held observations. Real orbit150 first4frames gives13 output frames at30s,
+1,709 observations +168 corner constraints/component; saved coefficient penalty
+range0.001057–1.0, padded quality0.5, RMS H/P0.268/0.211S. Original source arrays
+preserved; NetCDF reopened and an interpolated PNG reviewed. Scratch
+/tmp/icbuilder_spline_cadence_20261006. [[Processing Pipeline]] owns the contract.
+No full orbit/corpus or production writes. Next: run one full chosen orbit,
+inspect maps/residuals and knot/ridge/quality-scaling sensitivity.
+
+## WIC and SI13 conductance analysis: CS and detector entry points
+
+The earlier implementation provided conductance_validation_cs.py only.
+User identified the missing detector analysis; conductance_validation.py is
+now implemented in scripts/ratio_relation_validation, sharing the same count
+binning, joint P/H errors and block-bootstrap code with explicit detector
+selection and pixel grouping. Both cameras run by default. Default detector
+input is the transferred local data/IMAGE_FUV/ratio_relation_validation/
+detector_crossings directory; outputs are unsuffixed detector figure/NetCDF
+paths, separate from the existing _cs products. Annotations remain reusable.
+
+Detector selection uses own-camera counts and CS-gate coverage, containing
+footprint/pixel indices and detector separation, with existing DMSP/SZA cuts.
+No extra ratio/method-valid/other-camera cut. Inherited upstream common support
+is documented. Camera error draws share a detector pixel/time, not a CS cell;
+DMSP draws retain shared timestamps and P/H covariance. Existing CS behavior
+and all27 tests remain intact;37 CS/detector analysis tests now pass.
+
+Real transferred detector orbit85 has2841 rows,2773 selected/error-eligible
+pairs per camera. Four relations/two reopened NetCDFs pass a10-realization
+scratch gate in /tmp/icbuilder_detector_conductance_gate_20261006. Annotations
+were ignored and minimumcount1 used for execution verification only. No full
+corpus analysis/production writes/commits. [[DMSP Spectrum Conductance Validation]]
+owns method, source fields and evidence. Next: run detector analysis on the
+complete transferred crossings with the intended annotations and default200
+realizations; continue CS analysis through its separate entry point.
+
+## DMSP uncertainty follows published NaN omission
+
+**Confirmed by the user (2026-10-06):** follow the published DMSP method and
+ignore NaN channel-error terms. This supersedes our strict all-19-errors
+requirement and the pending choice of an alternative error model.
+
+Implemented in icPhysics and the yearly, detector/CS crossing and CS analysis
+paths. Nominal spectrum-derived P/H are unchanged. Analytical P/H STD and
+covariance use finite nonnegative errors; NaN/masked terms are omitted.
+All-missing errors remain unavailable; negative/infinite supplied errors,
+singular propagation and output overflow remain invalid. The int16
+`electron_conductance_uncertainty_channel_count` records reported errors,
+including defined zeros, alongside the separate int8 uncertainty-valid flag.
+Resampling accepts partial errors and saves partial/complete cohort counts.
+Independent energy channels and fixed atmosphere/B/energies remain assumptions.
+
+Verified: 63 physics and 135 focused builder tests pass. Real Jan1 F13 has
+19,696 uncertainty-valid of 20,316 nominal-valid spectra (18,807 partial and
+889 complete); the 620 all-missing cases retain zero nominal P/H. Real May16
+F13 -> CS orbit85 -> analysis has 3,847 crossings, 870 quality-selected and
+870 resampling-eligible pairs (772 partial/98 complete). Nominal P/H exactly
+match earlier scratch products. The unannotated gate uses 10 realizations and
+minimum count1 for execution verification, not scientific interval estimates.
+[[DMSP Spectrum Conductance Validation]] owns source citations and evidence.
+
+Next: finish yearly DMSP generation locally using updated icPhysics/icBuilder,
+transfer the yearly files to the server, deploy both crossing scripts there,
+then rebuild CS/detector crossings. Transfer rebuilt CS crossings back to
+local storage and run conductance_validation_cs.py locally. Existing
+annotations remain reusable. User wants server execution without agent
+monitoring; no full jobs or production writes were performed here. Changes
+remain uncommitted; preserve unrelated generated example artifacts and the
+user's `min_flux=0` analysis default.
+
+## CS coverage is not a complete uncertainty model
+
+Verified both P2 CS and P3 CS use the same live CS reducers: low coverage has
+no explicit inflation term. This is a shared CS conversion issue across
+precipitation, conductance, and diagnostic fields, not conductance-only.
+Its normalized overlap variance accounts for independent contributors, but
+not unobserved-cell representativeness or cross-pixel covariance from shared
+SI inputs and Gaussian smoothing. `conductance_valid` only requires positive
+coverage, as does P2 CS `method_valid` on its own source support. Coverage is
+summed overlap clipped to one, not geometric union area.
+See [[Detector-First Product Architecture#Verified CS coverage and uncertainty interpretation (2026-10-05)]].
+There is no adopted nonzero coverage threshold. A realistic artificial-masking
+validation against well-covered cells is proposed if the downstream analysis
+requires full-cell means; no product or uncertainty correction was changed.
+
+## Optional fixed Gaussian smoothing is implemented in Product 2
+
+The white `method_quality_weight` holes seen in the orbit-0261 smoothing
+comparison exposed an incorrect coupling to `method_valid`. In frame 20,
+among pixels with smoothed WIC above 100 counts, 1,553 weights were NaN: 1,132
+lacked common mapped SI12/SI13 input support, while 421 had valid inputs and
+finite positive three-sensor weights but failed the ratio retrieval after
+SI12 proton correction clipped corrected WIC to zero. Product 2 now defines
+the weight only from common finite sensor-weight support, independently of
+ratio/E0/Fe success. Product-2 CS and Product-3 CS likewise reduce this field
+on its own finite support rather than `method_valid` or `conductance_valid`.
+The restart validator rejects existing schema-4 files carrying the old method
+description, so they regenerate without a manual schema bump.
+
+Deployment requires the schema-4-capable icReader. The Product-2 runner calls
+`icreader.open_product()` to validate each completed `.partial` before atomic
+publication. An older server icReader rejects schema 4; the runner reports an
+incomplete file and deletes the partial, leaving an empty output directory.
+This was reproduced against one local orbit: with the updated reader, orbit
+0085 completed and published normally in 1 minute 55 seconds. `--overwrite`
+does not delete the output directory and is unrelated to this failure.
+
+The downstream chain is integration-tested against that exact schema-4 orbit.
+Orbit 0085 produced detector Product 3 in 8.9 seconds, then paired
+precipitation-CS and conductance-CS products in 7.9 seconds. Immediate reruns
+without `--overwrite` classified all three outputs complete. The implementation
+changes in `conductancedetector.py`, `precipitationcs.py`, and
+`conductancecs.py` still need to be committed and pushed to icBuilder before
+the server has this downstream support; the compatible icReader changes are
+already pushed on `modular_pipeline`.
+
+The CS runner now also supports `--precipitation-only`. In this mode it
+discovers Product-2 orbits without intersecting against Product 3, never reads
+or creates conductance inputs/outputs, and atomically writes only
+`precipitation_cs`. The paired behavior remains the default. A real schema-4
+orbit-0085 run completed in 6.0 seconds into an otherwise empty output base,
+and the immediate restart correctly reported one complete and zero pending.
+Sixteen focused detector-CS/conductance tests pass. The new runner/helper and
+the earlier downstream icBuilder changes remain uncommitted locally.
+
+The runner now also has a mutually exclusive `--conductance-only` mode. It
+requires an existing precipitation-CS file that is complete and current for
+the selected Product-2 source, validates the Product-2/Product-3 detector pair,
+reduces only Product 3, and leaves precipitation CS untouched. Real orbit 0085
+completed in 5.2 seconds; the precipitation-CS size and modification time were
+unchanged, and immediate restart reported zero pending. Nineteen focused tests
+pass. These conductance-only changes remain uncommitted locally.
+
+The current experimental weight is WIC-only. fuvpy `dgweight` is a Tukey
+background-fit inlier weight: one means background-consistent and zero means a
+rejected residual. Product 2 converts the WIC field to the high-is-auroral
+score `1 - dgweight`, spatially propagates that score when WIC is smoothed, and
+stores it directly as `method_quality_weight`. Both tested three-sensor
+combinations were rejected visually: multiplication made the field nearly
+zero everywhere, while `1 - product(1-quality)` looked poor.
+
+This inversion is new, not a restoration of legacy semantics. The actual
+icAnalyzer legacy corpus is `data/IMAGE_FUV/conductance`, not the later
+`precipitation_IR_hardy_weighted` corpus. Its 1,684 files were generated on
+2025-12-02. The matching commit `be290f2` from that morning defines each binned
+sensor weight as the bin median of `dgweight * shweight`, in the original fuvpy
+IRLS orientation, and defines the stored conductance `w` as
+`(wic_w + s12_w + s13_w) / 3`. There is no `1 - w` transformation. Sample
+stored medians are 0.898, 0.917, and 0.963 for orbits 0085, 0261, and 0968,
+consistent with the high-is-background-fit orientation. The later weighted
+precipitation corpus instead multiplied its three raw-orientation sensor
+weights and must not be confused with the icAnalyzer legacy input.
+
+Schema-4 detector Product 2 now performs optional per-sensor Gaussian
+smoothing after Product-1 count-source selection and before SI12 proton
+correction. Smoothing defaults on with WIC sigma 0.8, SI12 disabled, and SI13
+sigma 1.2 in WIC detector pixels. The Python API and runner expose a global
+`smoothed`/`--no-smoothed` switch plus all three widths; `None` or zero disables
+one sensor. Physical result names do not depend on the configuration.
+
+Product 1 remains the complete unsmoothed source. Product 2 retains its
+unsmoothed `si12`/`dsi12`, does not copy unsmoothed WIC or SI13, and serializes
+`<sensor>_smoothed` plus its propagated uncertainty only when that sensor was
+actually smoothed. Measurement variance uses squared normalized Gaussian
+weights. Boxcar and adaptive processing code and CLI choices have been
+removed; previously generated diagnostic products and figures were not
+deleted.
+
+For background-subtracted products, WIC's complemented field is propagated
+over the same contributors as a Gaussian-kernel-weighted geometric product
+with a recorded `1e-6` floor when WIC is smoothed. It is stored on WIC support
+independently of retrieval success. Unsubtracted products retain uniform
+quality on common detector support because `dgweight` describes the removed
+background fit.
+
+The schema records the global request, effective widths, per-sensor applied
+flags, processing order, variance rule, and Tukey propagation. icReader reads
+both legacy schema-3 and new schema-4 Product 2 explicitly, allowing direct
+old/new comparison without treating schema 3 as the new default. Product-2 CS
+preserves the new smoothing and quality provenance. Detector Product 3 is now
+schema 3 and Product-3 CS is schema 2; both carry the same count-source,
+smoothing, variance, and Tukey-weight recipe directly alongside their carried
+`method_quality_weight`. Their icReader classes retain explicit support for
+legacy Product-3 schemas 2 and 1, respectively. The comparison plot now
+includes `method_quality_weight` beside WIC, SI12, SI13, and ratio.
+
+Thirty-seven focused Product-2, Product-2-CS, and Product-3 tests pass; all 39
+icReader tests under `tests/` pass. The wider icBuilder suite reached 193 passes. Its four
+remaining failures are pre-existing 36-by-36 expectations conflicting with
+the live 46-by-46 grid and Zhang--Paxton lookup, not this implementation. The
+next gate is to inspect the new local schema-4 Product 2 files against the
+existing schema-3 fixed-Gaussian products, including the Tukey weights, then
+regenerate Product 3 and its CS representation from the accepted Product 2
+files.
+
+## Real-orbit mapped-PSF diagnostic ready to run
+
+`scripts/debugging/diagnose_mapped_detector_psf.py` measures sampled columns of
+the exact sparse SI-to-WIC footprint-overlap operator on the native local orbit
+files. It calculates each mapped impulse's geographic covariance on the
+130-km shell and combines that mapping footprint with the approximate Hubert
+physical optical PSF in quadrature. The script discovers complete local
+WIC/SI12/SI13 orbits by default, samples jointly usable frames and native SI
+pixels, and writes sample/summary CSV files, assumption metadata, and PNG/PDF
+distribution plots. Its deliberately strict screening verdict requires the
+central 80% of SI12 minor-axis widths to lie above both nominal WIC and the
+central SI13 major-axis distribution; it also reports the largest sampled
+95th-percentile major width as a conservative target-screening scale.
+
+This remains a geometry/PSF sensitivity rather than an in-flight calibration:
+Hubert's PSFs are approximate apogee values, the optical contribution is
+treated as isotropic Gaussian, and combining it with the mapped footprint may
+partly double-count detector integration already represented by the published
+PSF. Seven focused diagnostic/coregistration tests pass.
+
+The user ran the diagnostic on all four complete local orbits (0085, 0086,
+0261, and 0968), sampling three frames and 128 impulses per sensor per orbit.
+Mapped SI12 is usually broadest: its combined median minor/major FWHM is
+217/224 km, versus 160/169 km for mapped SI13 and the nominal 182-km WIC PSF.
+It does not cleanly dominate everywhere: SI12's 10th-percentile minor width is
+207.7 km while SI13's 90th-percentile major width is 217.7 km, so the strict
+central-80% separation test fails. The pooled conservative target-screening
+scale is 286.6 km, the largest 95th-percentile major width. This covers 95.0%
+of sampled SI12 and 98.8% of SI13 major responses; 250 km would cover only
+84.8% of SI12 despite covering 96.8% of SI13. The result does not support
+claiming that unsmoothed mapped SI12 universally defines a common PSF.
+
+## Orbit-held-out ratio prediction test implemented
+
+`scripts/ratio_relation_validation/ratio_validation_predictive_cv.py` now
+tests the retrieval question directly: does empirical `E(R)` predict DMSP mean
+energy on a completely unseen IMAGE orbit better than unconditional energy
+quantiles? It uses the fixed three-count ratio bins, trains empirical 10%, 50%,
+and 90% energy quantiles on nine folds, and predicts the tenth without
+interpolation or extrapolation. Complete orbits remain together. Frey is a
+fixed reference evaluated only over its tabulated ratio support.
+
+The primary scores are orbit-balanced MAE and three-quantile pinball loss.
+Uncertainty intervals and the practical-use decision come from paired orbit
+resampling; a separate sensitivity repeats the fixed CV split after drawing
+both ratio and DMSP energy from the same moment-matched lognormal assumptions
+used by the uncertainty-aware validation. The output NetCDF retains every
+out-of-fold prediction, orbit score, uncertainty realization, selection
+setting, and decision threshold. Three figures compare point predictions,
+paired orbit performance, interval calibration/width, and the Frey curve's
+empirical percentile as a function of ratio.
+
+Six new tests cover orbit isolation, recoverable signal, an independent-energy
+null case, Frey support, repeatable uncertainty draws, and complete output.
+Together with the existing focused validation tests, all 26 pass.
+
+A full real-data run used the deliberately favourable selection
+(`SZA >= 105`, flux `>= 2e11`, accepted detector crossings). It retained
+17,033 samples from 184 orbits. The ratio model reduced orbit-balanced MAE
+from 1.127 to 1.092 keV: 3.1%, with a 95% paired-orbit bootstrap interval of
+0.6% to 5.6%. Quantile loss improved by 2.2% (95% interval 0.02%--4.4%);
+the ratio interval width remained 3.38 keV and its 10--90% coverage was only
+73.0%. It therefore failed the predeclared 5% practical-improvement and
+calibration decision. Across 200 uncertainty realizations, the median relative
+MAE improvement was 3.0% with a 95% sensitivity range of 2.1%--3.8%. The run
+used the default 2,000 paired-orbit bootstraps and 200 uncertainty
+realizations.
+
+Frey is not a consistent conditional quantile in this favourable population.
+Its empirical percentile is near zero around ratio 35, crosses the median near
+ratio 70, crosses 75% between ratios 74 and 77, exceeds 90% near ratio 89, and
+reaches essentially 100% above ratio 97. The apparent closeness to the 75%
+curve over part of the plot therefore does not characterize the full relation.
+On the identical 8,740 samples in Frey's tabulated ratio range, orbit-balanced
+mean absolute errors rank the constant baseline first (1.181 keV), empirical
+`E(R)` second (1.240 keV), and Frey last (3.375 keV). The fractions predicted
+within 1 keV are 50.0%, 46.7%, and 32.2%, respectively; within 2 keV they are
+85.7%, 81.5%, and 57.6%. Thus the slight full-domain `E(R)` improvement is not
+robust to restricting all methods to common support.
+
+## Uncertainty-aware ratio validation implemented separately
+
+`scripts/ratio_relation_validation/ratio_validation_uncertainty_aware.py` is a
+separate experimental entry point; the direct observed-data analysis remains
+in `ratio_validation.py`. The new workflow preserves the established
+annotation and quality selections, histograms, and empirical conditional
+quantiles. It then jointly perturbs positive IMAGE ratio and DMSP mean energy
+with moment-matched lognormal draws using stored `dR` and
+`energy * fractional_std`, respectively. This is explicitly labelled an
+uncertainty sensitivity because the source metadata does not establish exact
+Gaussian one-sigma likelihoods.
+
+Sampling dependence is handled by a block bootstrap, defaulting to whole
+orbits; crossing blocks and measurement-only resampling are optional. Every
+realization recalculates the two conditional-quantile directions and fits two
+fixed-knot monotonic piecewise-linear median relations in log space. The
+ratio-binned direction fits DMSP energy as a function of IMAGE ratio. The
+energy-binned direction independently fits IMAGE ratio as a function of DMSP
+energy; it is not the forward fit drawn with exchanged axes. The output NetCDF
+stores all realization-level histograms, quantiles, both knot/curve fits,
+summary intervals, random seed, bootstrap contract, and quality limits. New
+figures show the input uncertainty distributions and both conditional
+directions. Each relation figure includes the resampled quantiles, median
+uncertainty envelope, direction-appropriate piecewise median, and Frey curve.
+
+The uncertainty-aware workflow now also has the thin CS entry point
+`ratio_validation_uncertainty_aware_cs.py`. It delegates the resampling and
+plotting to the shared implementation while loading CS matches and enforcing
+the CS spatial contract: `cs_inside` and `cs_separation_deg <= 1`. The run
+matrix calls this wrapper for its `_cs` case, uses distinct default output
+paths, and records CS-specific provenance without the detector-separation
+attribute.
+
+The later hierarchical linear/log comparison fits were removed because their
+results were not scientifically credible. The script now contains no EIV
+optimizer, comparison-fit CLI, model curves, or model NetCDF fields. Eight
+focused numerical/CLI/figure tests plus the existing 12 ratio-validation tests
+pass. A real three-realization detector orbit-bootstrap gate at sample-level
+`SZA >= 105` completed on 43,970 selected samples, wrote a valid NetCDF with no
+residual model fields, and generated both simplified uncertainty-aware
+figures. A one-realization real CS gate at the same SZA limit loaded 266,986
+matches, selected 62,517 samples with usable uncertainties, generated the full
+figure set, and wrote the expected CS provenance. A 20-realization in-memory
+resampling benchmark took about 2.3 seconds including imports; the full corpus
+file load remains the dominant startup cost.
+
+## Ratio quantiles currently ignore substantial ratio uncertainty
+
+The ratio-validation quantiles are ordinary unweighted sample quantiles and
+do not use `img_ratio_std`/`dR`. On accepted crossings passing the usual DMSP
+uncertainty, flux-maximum, method-valid, separation, and sample-level
+`SZA >= 105` cuts, median `dR` is 21.1 against a ratio-bin width of 3; median
+`dR/R` is 0.765 and 39.4% of samples have `dR/R > 1`. Ratio-bin migration can
+therefore be material. A hard relative-error cut changes the quantile curves
+substantially but also selects brighter optical conditions, so it is not an
+unbiased uncertainty treatment.
+
+The annotator's `--minimum-sza 105` option is crossing-level: a candidate is
+shown if any matched sample reaches 105 degrees. It does not impose a
+sample-level SZA cut. In the current accepted set, about 52% of finite positive
+ratio samples have SZA below 105 degrees. The validation must be run with
+`min_sza=105` when that sample-level restriction is intended.
+
+For uncertainty sensitivity, retain the observed-ratio quantiles as the
+descriptive result and use the separate uncertainty-aware runner, which
+recomputes both conditional directions across joint ratio/energy perturbations
+and an orbit block bootstrap. Do not inverse-variance-weight the quantiles. A
+latent errors-in-variables model would still be required to claim the relation
+conditional on true rather than observed ratio.
+
+## Ratio-validation quality limits are callable parameters
+
+`scripts/ratio_relation_validation/ratio_validation.py` now exposes a
+`run(...)` API as well as matching command-line options for minimum and
+maximum DMSP electron flux, minimum and maximum WIC SZA, and the maximum DMSP
+energy and flux fractional uncertainties. Defaults are deliberately broad for
+flux and illumination: `min_flux=0`, `max_flux=1e14`, `min_sza=0`, and
+`max_sza=180`; uncertainty defaults remain 0.25 and 0.20. The selected values
+are written into the binned NetCDF provenance.
+
+This allows a wrapper to run the agreed `0`, `8e10`, and `2e11` minimum-flux
+cases with distinct output paths without editing module globals. Invalid flux,
+SZA, or uncertainty ranges fail explicitly. All 12 focused ratio-validation
+and background-comparison tests pass.
+
+## IMAGE intensity cannot safely identify every sub-threshold DMSP sample
+
+An empirical check of the accepted detector crossings used the standard
+validation-quality cuts except for the lower DMSP flux cut: `SZA >= 105`,
+electron-energy and flux fractional uncertainties at most 0.25 and 0.20,
+separation at most 1 degree, positive flux no greater than `1e14`, and valid
+IMAGE method output. This retains 62,117 samples in 980 accepted crossings.
+
+Corrected WIC has the strongest monotonic relation to DMSP electron flux
+(Spearman 0.481); SI13 is weaker (0.407), and IMAGE ratio and retrieved energy
+are much weaker (0.207 and 0.277). The populations overlap even at zero IMAGE
+counts, so no positive one-variable lower cutoff has zero counterexamples.
+For the joint weak-signal condition `WIC < 50 and SI13 < 3`, 71.5% of samples
+are below `8e10` and 88.5% are below `2e11`, but the condition still contains
+5,182 and 2,084 above-threshold samples, respectively. The latter occur in
+253 accepted crossings across 115 orbits and are not isolated outliers.
+
+Therefore an IMAGE count gate may define unreliable optical ratio support,
+but it cannot be interpreted as proof that DMSP flux is below an auroral
+threshold. If such pixels are excluded from an energy product, represent the
+energy as missing/invalid rather than physical zero.
+
+## Detector-first CS ratio support differs from the legacy product
+
+A direct old/new CS comparison shows substantially broader finite-ratio
+support in the detector-first product, including much of the polar cap. This
+is expected from the live validity logic: corrected WIC/SI13 ratio `R` is
+calculated whenever both corrected counts are finite and nonzero. The familiar
+WIC-50/SI13-3 rule is only an electron-energy fallback (`E0=0.2` or `1 keV`),
+not a ratio-validity mask. Those fallback pixels have finite `E0` and `Fe`, are
+therefore marked `method_valid`, and participate in the detector-to-CS area
+reduction. The new product consequently has no explicit 50/3 gate removing
+weak-signal `R` values.
+
+The smoother legacy SI12/SI13 appearance is a separate processing difference:
+the old workflow bins sensors before precipitation calculation, whereas the
+new workflow coregisters and calculates on WIC detector geometry before the
+46-by-46 CS area reduction. Do not attribute that smoothing difference to the
+50/3 fallback.
+
+## Literature support for DMSP flux-threshold sensitivities
+
+The IMAGE WIC/SI13 lineage does not publish a universal lower DMSP electron-
+flux cutoff for retrieving mean energy. Meurant et al. (2003) identify one
+roughly 1.5-mW/m2 region where the NOAA mean-energy estimate is less reliable,
+but they do not turn that event observation into an exclusion rule. Coumans et
+al. (2004) compare the smoothed pass without stating a lower flux threshold.
+Frey et al.'s 1-mW/m2 calculations are response normalizations, not validity
+limits.
+
+There are defensible published thresholds for explicitly labeled sensitivity
+tests. Lane et al. (2015) use 15-s-smoothed DMSP flux thresholds of 0.4 and
+0.6 erg cm-2 s-1, equivalent to directional intensities of approximately
+`8e10` and `1.2e11 eV cm-2 sr-1 s-1`, as empirical nightside auroral-boundary
+proxies. A directional intensity of `2e11` corresponds to approximately
+1 mW/m2 after multiplying by pi for an isotropic downward distribution.
+Decotte et al. cite that approximate visible-aurora scale from Keiling et al.
+(2003); it is not Decotte's own DMSP detection threshold. Thus `2e11` is
+supportable as a visible/strong-signal sensitivity, not as the canonical
+validity threshold for the IMAGE ratio relation.
+
+Much lower DMSP thresholds (`1e9`--`2e9`) in Kilcommons et al. (2017) and
+Decotte et al. (2023) detect the presence of auroral precipitation using only
+the 1.3--30-keV electron channels. They are not optical signal-to-noise cuts
+and are not directly interchangeable with the full-band flux in the current
+validation. The most ratio-specific published guard is instead Gasparini et
+al. (2024)'s corrected-camera count treatment: WIC below 50 together with SI13
+below 3 is assigned polar-cap energy, while low SI13 with high WIC is treated
+as an undetermined ratio. Those numerical count limits must not be transferred
+to the current detector samples without reproducing Gasparini's gridding and
+three-image averaging.
+
+The proposed three-population comparison is therefore `MIN_FLUX=0` for all
+samples in accepted crossings, `8e10` to isolate the auroral portion of each
+traversal, and `2e11` for visible/strong precipitation. The `8e10` level is
+anchored to Lane et al.'s empirical boundary proxy and should be applied to a
+15-s-smoothed flux if claiming fidelity to that method. An optional `3e11`
+sensitivity corresponds to Meurant et al.'s event-specific 1.5-mW/m2 example,
+but that paper does not establish it as a general cutoff. Any relation that
+appears only after the `2e11` or `3e11` selection must be reported as
+conditional on strong precipitation. Because DMSP flux is the validation-side
+quantity, this cut cannot become a production IMAGE validity rule; an IMAGE-
+count or propagated-ratio-uncertainty gate would be the methodologically direct
+alternative.
+
+## DMSP WIC contact-sheet annotator implemented
+
+`scripts/ratio_relation_validation/annotate_dmsp_frames_v2.py` implements a
+separate page-based interface without changing the established annotator. It
+keeps the same orbit/time/satellite key, candidate filters, resume behavior,
+deferred-row handling, and CSV schema. Each page shows at most 36 corrected
+WIC views in a 6-by-6 grid and never mixes orbits. Clicking a crossing toggles
+its pending flag between 0 and 1; flag 1 is marked by a green frame and badge.
+
+Page decisions remain in memory until `n` is pressed. That key atomically
+writes every visible crossing, with selected panels saved as 1 and all others
+as 0, then advances. Pressing `q` or closing the window leaves the current
+page untouched. Incomplete final pages retain blank axes. The original
+`annotate_dmsp_frames.py` remains unchanged.
+
+Four focused v2 tests cover 36-item pagination, page-save and quit semantics,
+atomic replacement of deferred rows, and direct click-toggle/`n` event
+handling. All 14 focused v1 and v2 annotation tests pass together.
+
+## IMAGE-FUV spatial-smoothing source audit
+
+The newly local Hubert et al. (2002) and Mende et al. (2003) papers complete a
+direct source audit of the quantitative WIC/SI13 lineage. Meurant et al. (2003)
+explicitly maps SI into WIC space, removes its nightside histogram background,
+smooths WIC and SI13 to reduce count noise and mapping errors, applies the
+SI12-derived proton correction, and only then forms WIC/SI13. The quoted
+one-to-two-pixel value is the stated magnitude of the mapping errors, not a
+published smoothing width. Meurant gives no kernel, width, edge rule, or
+uncertainty/covariance treatment, so the Gaussian `sigma=1.5` reconstruction
+remains a sensitivity assumption rather than a recovered historical setting.
+
+Hubert's approximate apogee values imply physical PSF FWHMs of 182 km for
+WIC, 146 km for SI13, and 206 km for SI12. If the PSFs are treated as
+Gaussian, matching mapped SI13 to WIC alone suggests an additional SI13
+`sigma` near 0.9 WIC pixels; matching WIC and SI13 to the SI12 scale suggests
+channel-specific sigmas near 0.8 and 1.2 WIC pixels. The overlap mapper adds
+its own averaging, so these are PSF-informed experiment scales, not recovered
+historical parameters.
+
+Hubert establishes the SI13-to-WIC mapping and pixelwise ratio but documents
+no smoothing or PSF matching. Mende's explicit 2.5-pixel filter applies to
+SI12 for its FAST event, not to Meurant's WIC/SI13 operation. Coumans et al.
+(2004) explicitly names Hubert and Meurant as the detailed basis of its
+electron-energy and uncertainty method, making them the clearest lineage for
+later conductance work, while not recovering the missing filter details.
+Frey does not document WIC/SI13 smoothing. Gasparini later uses a different
+combination of spatial gridding, three-frame averaging, thresholds, and
+regularization rather than a literal Meurant filter.
+
+The full audit is `vault/02_Algorithm/Audit - IMAGE FUV Spatial Smoothing.md`.
+Production code is unchanged. Any smoothing implementation should be a named,
+controlled preprocessing experiment with an explicit physical grid, kernel,
+width, support, operation order, and variance treatment.
+
+The small-corpus diagnostic is now implemented temporarily in Product 2,
+after count-source selection but before proton correction and ratio formation.
+WIC and SI13 are smoothed separately on their own valid supports; common
+WIC/SI12/SI13 validity is applied afterward. Gaussian and odd-square boxcar
+kernels propagate independent-pixel variance with squared normalized weights,
+do not expand the original valid masks, and store the smoothed pre-proton
+counts and standard deviations. Retrieval labels include kernel and widths.
+The unsmoothed default is unchanged. If retained as production preprocessing,
+the same operation moves to Product 1 rather than remaining hidden in Product
+2.
+
+Sixteen focused Product-2 tests pass, including exact 3-by-3 boxcar variance,
+valid-mask behavior, provenance, restart mismatch detection, and output naming.
+Thirty related detector Product-2/Product-3 tests pass together. A real
+orbit-0085 PSF-informed Gaussian run (`sigma_WIC=0.8`, `sigma_SI13=1.2`)
+completed with 122 frames; icReader loaded both optional smoothed fields and a
+repeat invocation correctly skipped the complete output.
+
+`scripts/debugging/plot_precipitation_smoothing_frames.py` provides the direct
+visual comparison. It writes one PNG per orbit/frame with WIC, SI12, SI13, and
+the calculated Product-2 ratio as columns; each smoothing technique is a row,
+with the unsmoothed product forced to the top. Sensor and ratio colour limits
+are shared down each column. A real baseline-versus-Gaussian orbit-0085 frame
+completed successfully.
+
+Detector Product 2 now persists `si12` and `dsi12`, the exact mapped SI12
+counts and measurement uncertainty supplied to proton correction on common
+method support. These accompany the existing proton-corrected WIC/SI13 fields.
+The detector-to-CS reducer carries `si12`/`dsi12` into `precipitation_cs` with
+the same overlap-area mean and squared-weight variance propagation used for
+the corrected camera fields. CS files also retain count source and smoothing
+kernel/width provenance. This makes corrected WIC, corrected SI13, and SI12
+available together through icReader without reopening Product 1.
+
+Thirty focused builder tests and all 36 icReader tests pass. A real smoothed
+orbit-0085 run completed through detector Product 2, detector Product 3, and
+both CS products. The resulting 122-frame precipitation CS file is 13 MB and
+icReader lazily reads `wic_corrected`, `si13_corrected`, `si12`, and their
+uncertainties. Earlier schema-3 files remain readable, but builder restart
+checks classify files without `si12`/`dsi12` as incomplete so they regenerate.
+
+The updated full Product-2 rerun is now in progress on `dynamit`. Product 3
+and the paired CS products remain to be regenerated after it completes.
 
 ## DMSP segment correspondence features implemented
 
@@ -440,6 +1163,15 @@ and last 18 northern frames; red/yellow/green borders encode automatic quality
 classifier diagnostics. The run is serial and restartable, and rebuilds a
 combined `manifest.csv` from completed sheets.
 
+The raw HDF indices contain more orbits than the successful background corpus:
+production first selects northern data, then `backgroundmodel_BS` retains
+quality-2 frames, and writes a NetCDF only if that processing succeeds.
+Product 1 subsequently discovers those written WIC files. The generator now
+accepts `--background-base` and uses the existing per-sensor background
+NetCDFs as the exact success-cohort gate, without rerunning the fit. Per-orbit
+review files left from a broader raw-index run are excluded from the combined
+manifest when this gate is active.
+
 `annotate_frame_quality_review.py` reviews only the transferred PNG and CSV
 package locally. Manual exceptions and uncertain cases are keyed by sensor,
 raw source filename, and timestamp and are saved after every action. A second
@@ -448,11 +1180,89 @@ so stopping and resuming cannot lose progress. The annotations do not yet
 alter Product 1 or the classifier; they are validation evidence for a later
 explicit classifier or exclusion-policy decision.
 
-Seven focused tests cover edge selection, sheet/manifest construction, click
-mapping, exception semantics, and durable state. A real orbit-0085 smoke test
-completed for WIC, SI12, and SI13 and produced 60 manifest rows without
-duplicate short-orbit frames. The next action is the full server generation,
-followed by local review of the transferred package.
+Eight focused tests cover edge selection, production-cohort gating,
+sheet/manifest construction, click mapping, exception semantics, and durable
+state. A real orbit-0085 smoke test completed for WIC, SI12, and SI13 and
+produced 60 manifest rows without duplicate short-orbit frames.
+
+The complete server-generated package is now transferred locally to
+`/home/bing/Dropbox/work/temp_storage/frame_quality_review`. It contains 4,189
+contact sheets and 150,653 frame panels: 1,378 WIC sheets, 1,482 SI12 sheets,
+and 1,329 SI13 sheets. The transferred manifest has no duplicate stable frame
+identities, every referenced PNG is present, and `failures.csv` is empty. The
+next action is the resumable local manual review, followed by evaluation of
+the saved exception table against the automatic classifier.
+
+A preliminary WIC-only review covers 54 completed sheets and 1,933 displayed
+frames. It records 466 overrides. The dominant scientifically relevant pattern
+is 317 automatic-quality-2 frames changed manually to 0, all in the first 18
+frames of their sheets and spread over 30 orbits. These frames pass every
+current frame-local threshold, so the existing mapped coverage, MLAT reach,
+row-spread, voltage, and turn-on-correlation rules do not identify the observed
+start-of-orbit defect. Another 51 early quality-1 frames were changed to 0;
+they were already excluded from the background fit by the quality-2 minimum.
+
+The opposite pattern needs different interpretation: 92 late automatic-0
+frames were changed manually to 2, but 90 have WIC detector voltage below the
+automatic validity threshold. Normal-looking stored pixels do not establish
+that a detector-off exposure is valid or independent, so these promotions
+must not be treated as classifier errors without checking the telemetry and
+raw-image behavior. The review is incomplete and has not yet covered SI12 or
+SI13.
+
+The first 54 WIC sheets also expose a sequence-level selection signal. In
+every reviewed orbit, manually rejected leading frames form one contiguous
+prefix: once a frame is accepted, no later frame among the first 18 is
+rejected. Existing manifest diagnostics do not provide a clean replacement
+threshold. On automatic-quality-2 leading frames, an orbit-grouped logistic
+model using frame position, mapped fraction, maximum MLAT, row spread,
+turn-on correlation, and voltages reaches only 0.665 ROC AUC and 0.618
+balanced accuracy. Maximum MLAT is the strongest existing single diagnostic,
+but rejected frames can already reach about 89.6 degrees.
+
+Image statistics extracted diagnostically from the common-scaled contact
+sheets are substantially more informative. At the manually selected boundary,
+the median normalized frame-to-frame RMSE rises from 0.0053 to 0.0130,
+successive-frame correlation falls from 0.990 to 0.963, and the panel 99th
+percentile rises from 0.122 to 0.220. An orbit-grouped exploratory forest using
+these display-derived and manifest features reaches 0.859 ROC AUC and 0.755
+balanced accuracy. These values establish a promising startup/change-point
+signal but are not production thresholds because the PNG values inherit
+per-sheet colour normalization. Before changing fuvpy, reproduce the signal
+from raw-count brightness/contrast and common-pixel frame differences, then
+test a one-way leading-state rule with persistence on held-out orbits.
+
+An explicit one-change-point test confirms that the sequence constraint is
+useful. A frame classifier produces a science-state probability `p_t`; for
+each orbit the selected boundary minimizes the summed negative log likelihood
+of startup before the boundary and science afterward. With orbit-grouped
+cross-validation on the current display-derived features, the exploratory
+forest reaches 0.836 balanced accuracy, 0.820 precision, and 0.881 recall. The
+boundary median absolute error is 1.5 frames, the mean is 2.93 frames, 44% of
+boundaries are exact, and 57% are within two frames. A shallow tree reaches
+0.822 balanced accuracy and may ultimately provide a more transparent rule.
+This is a concrete candidate architecture, not yet a production selector.
+
+A simpler producer-state gate is now the leading alternative: reject WIC IDL
+frames with FUVVIEW3 `CALIBRATION_FLAG=1`, while allowing flag 3 to proceed to
+the existing voltage, mapping, geometry, and signal checks. Flag 3 must not be
+an unconditional acceptance state. In the two reviewed orbits whose raw IDLs
+are locally available, all 36 displayed flag-1 frames were manually rejected.
+The 36 flag-3 frames split evenly between manual acceptance and rejection; the
+rejected half are late orbit-0085 frames already caught by existing hard
+quality checks. Earlier four-orbit evidence remains less perfect: flag 1
+occurred in 131/178 discarded frames but also 27/870 retained frames, while 47
+discarded frames carried flag 3. Because this is a FUVVIEW3 calibration/product
+state rather than a documented quality flag, audit it against all currently
+reviewed WIC boundaries before adopting it.
+
+For the WIC-anchored detector-first pipeline, SI12/SI13 can then require a
+retained WIC match under the same deterministic nearest-unused, two-second
+timing rule used by Product 1. Applying that gate before SI background fitting
+would prevent unmatched SI frames from influencing the temporal model but
+would also remove otherwise useful SI-only temporal support; applying it only
+to saved/matched output avoids that model change. This operation-order choice
+still needs an explicit validation fit.
 
 ## Detector DMSP crossing extraction implemented
 
@@ -502,7 +1312,9 @@ CS-grid counterparts are implemented as
 `scripts/ratio_relation_validation/fetch_all_dmsp_crossings_cs.py` and
 `ratio_validation_cs.py`. The extractor samples the nearest cell of each
 fixed 46-by-46 Product-2 CS grid, records row/column, angular separation, and
-whether the footprint lies within the grid, and retains the detector
+whether the footprint lies within the grid. It also carries CS `sza` into the
+match files as `wic_sza`, allowing the CS analysis to apply the shared SZA
+selection. The extractor retains the detector
 extractor's per-orbit restart and multiprocessing behavior. The analysis uses
 the existing orbit/time/satellite annotations, requires an inside-grid match,
 and currently applies a provisional 1-degree nearest-cell threshold. Its

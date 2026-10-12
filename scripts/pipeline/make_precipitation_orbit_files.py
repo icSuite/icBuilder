@@ -13,6 +13,8 @@ from tqdm.contrib.concurrent import process_map
 from icbuilder import PrecipitationImage
 from icbuilder.kp import load_gfz_kp
 from icbuilder.precipitationimage import REGRID_METHOD, REGRID_UNCERTAINTY
+from icbuilder.precipitationdetector import hardy_electron_metadata
+from icbuilder.precipitationimage import HARDY_COORDINATE_NOTE
 
 
 #%%
@@ -91,6 +93,12 @@ def precipitation_file_status(
                 return "invalid"
             for name in PRECIPITATION_FIELDS:
                 if nc.variables[name].shape != shape:
+                    return "invalid"
+            if method == "hardy":
+                for name, value in hardy_electron_metadata(HARDY_COORDINATE_NOTE).items():
+                    if getattr(nc, name, None) != value:
+                        return "mismatch"
+                if nc.variables["E0_response_range_flag"].shape != shape:
                     return "invalid"
             if method == "image_ratio":
                 for name in ("R", "dR"):
@@ -183,7 +191,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--precipitation-method", "--precipitation_method",
         dest="precipitation_method",
-        choices=("zhang_paxton", "image_ratio"),
+        choices=("zhang_paxton", "image_ratio", "hardy"),
         default="zhang_paxton",
     )
     parser.add_argument(

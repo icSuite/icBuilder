@@ -13,6 +13,7 @@ from tqdm import tqdm
 from tqdm.contrib.concurrent import process_map
 
 from icbuilder import ConductanceImage
+from icbuilder.precipitationdetector import ELECTRON_METADATA_ATTRIBUTES
 
 
 #%% File handling
@@ -58,6 +59,11 @@ def conductance_file_is_complete(filename):
             for name in ("time", "Kp", "Kp_interval_start", "ssalon"):
                 if nc.variables[name].shape != (shape[0],):
                     return False
+            if nc.precipitation_method == "hardy":
+                for name in ELECTRON_METADATA_ATTRIBUTES:
+                    nc.getncattr(name)
+                if nc.variables["E0_response_range_flag"].shape != shape:
+                    return False
             nc.getncattr("precipitation_method")
             nc.getncattr("proton_flux_source")
             nc.getncattr("proton_energy_model")
@@ -84,6 +90,10 @@ def conductance_matches_precipitation(filename, precipitation_file):
             )
             if not matches:
                 return False
+            if precipitation.method == "hardy":
+                if any(conductance.getncattr(name) != precipitation.getncattr(name)
+                       for name in ELECTRON_METADATA_ATTRIBUTES):
+                    return False
             if precipitation.proton_energy_model == "constant":
                 return (
                     np.isclose(

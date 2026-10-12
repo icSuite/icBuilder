@@ -202,6 +202,190 @@ incompatible files. Common WIC/SI resolution matching is not part of Product
 
 ## Secondary spline workflow
 
+### Orbit-150 suppressed-oval diagnosis (2026-10-06)
+
+User's conference artifact
+/home/bing/Dropbox/work/conference/SMILE_MWG_2026/spline/
+or_0150_frames_50_99_spline.nc contains the full257-frame orbit, ncp16,
+degrees3/2,5min knots, ridge=-6, uncertainty weights and120s plotting cadence.
+Its name does not indicate actual frame selection. Hall output115 is15:21:31,
+holding source frame112 at15:20:20. Bright observed pixels (>5S) have median
+13.51S versus saved prediction0.377S (measurement-time prediction0.213S).
+Independent full Kronecker evaluation agrees with stored prediction to2.7e-15S;
+the suppression is not due to prediction reshaping or held-frame plotting.
+
+Source pixels below0.1S are55.4% of observations and carry99.99765% of total
+Hall inverse-variance precision. Zero pixels have median STD0.00693S versus
+2.20S for nonzero pixels. The16-control basis cannot represent the narrow oval
+while satisfying the heavily weighted surrounding background. Controlled
+45-frame fits (source90:135) evaluated at the exact complained-of time give
+bright-pixel median predictions: weighted ncp16=0.185S; uniform ncp16=12.08S;
+weighted ncp30=14.68S; weighted ncp16 with ridge=-12=0.185S. Earlier50:100
+controls also showed removing padding/wscaling barely changes the suppression.
+Thus resolution and error weighting, rather than ridge strength alone, cause
+this failure. Small posterior STD excludes this model mismatch and does not
+establish fit adequacy. Recommend ncp30 (legacy spatial default) and inspect
+residual/resolution sensitivity; uniform weighting is diagnostic. No new error
+floor, input-error model or default parameter change was adopted here.
+Scratch /tmp/icbuilder_spline_zero_audit_20261006. Conference files unchanged.
+
+Current live code and the conference file both complement modern quality as
+1-method_quality_weight before coefficient averaging. The earlier38-test
+checkpoint assumed direct quality and predates that live edit; its quality
+parity claims need reevaluation under the complemented convention. This audit
+preserved the edit. The saved quality variable/description does not clearly
+record the complement; explicit provenance remains a follow-up.
+
+### Prototype numerical contract
+
+A single-orbit CS prototype now exists at
+`scripts/debugging/fit_conductance_cs_splines.py`. It uses icReader's modular
+conductance_cs loader, separate clamped spatial xi/eta bases and exact UTC
+interior time knots; a sparse tensor product fits H/P with the existing Solver.
+Each component uses its own error (correcting the legacy SplineImage P->dH
+weighting mistake locally). Positive-error/uncertainty-valid weighting or
+uniform nominal weighting is explicit. Ridge scaling follows the legacy
+median nonzero G.T W G diagonal; legacy coefficient-quality scaling is enabled by default.
+User-requested2026-10-06: --minimum-std / minimum_std lower-clips valid positive
+real dH/dP to1 S by default;0 disables. Apply max(STD,floor), not quadrature
+error inflation. Raw errors and invalid masks remain unchanged; uniform weights
+ignore it and artificial corner STD remains separate. H/P_fit_std records
+effective errors; minimum_observation_std_S and per-component
+uncertainty_floor_count identify the floor. All67 focused tests pass; the
+seven-frame real smoke verified both fitting errors and unchanged0.1 S corners.
+Default16 spatial controls, degree3/2 and5-minute time knots are editable.
+Legacy comparison verified2026-10-06: make_spline_model_files.py defaults to
+ncp30 and cpt_step2.5min, with the same degree3/2 and log10 ridge=-6. Spatial
+clamped uniform knot placement agrees for the same bounds/count/degree; the
+prototype permits separate xi/eta bounds while legacy shares the xi knot array.
+Legacy time control count is int(duration_minutes/cpt_step), then uniform knots
+span the interval; its cpt_step is approximate. The prototype directly places
+interior knots at exact requested minute intervals. Both use zeroth-order
+coefficient ridge, not explicit derivative penalties or separate spatial/time
+regularization. Legacy CLI defaults wscaling=True (quality-dependent diagonal
+coefficient penalty); the prototype now implements that formula with
+--wscaling true by default. --wscaling false/--no-wscaling selects identity
+ridge. ncp/k/kt/cpt-step/lH/lP are exposed. Matching those settings still does
+not reproduce the old P->dH bug, approximate time spacing or absent corner constraints.
+Saved knots, coefficients, fits/support/residuals, posterior variance/STD and Hall/Pedersen PNG sets are
+standalone diagnostics, not the historical spline reader format. Predictions
+across gaps are unconstrained and can overshoot; masks are retained.
+
+Before constructing splines or padding, remove selected frames without usable
+real H/P observations under the chosen weighting. Usability includes nominal
+validity and finite nonnegative conductance; uncertainty weighting also needs
+uncertainty validity and a finite positive component STD. Retain a frame with
+either component's usable observations. Preserve real UTC gaps and original
+indices in source_frame_index; report removed_empty_frame_count. At least two
+frames must remain. A component with no observations in a retained frame gets
+no padding there. Verified2026-10-06: all55 focused tests pass, including explicit
+filtered-fit/covariance equivalence. Orbit150 empty weighted frames69,111,209,234;
+the real109:115 gate drops111 and fits five frames with210 constraints/component.
+
+Corner padding adds artificial zero constraints, default STD0.1S, only to
+retained frames with usable observations of the fitted component.
+Its spatial mask uses support from the entire input orbit:
+a cell is supported if nominal-valid and either H or P is finite/nonnegative
+in any frame. Four-connected unsupported regions touching the four corners
+are padded; temporary gaps and isolated interior holes are not. Full-orbit
+support avoids turning early/late coverage gaps into false zero constraints
+when selecting a short interval. These are imposed boundary assumptions,
+not measured zero conductances. --corner-std controls their precision;
+--no-corner-padding provides a sensitivity comparison. Uniform fits retain
+the low corner STD while real observations use1S. Original H/P_observed and
+dH/dP stay unchanged; H/P_fit_target and H/P_fit_std store the padded solver
+inputs. corner_padding_mask and H/P_observation_used distinguish synthetic
+constraints from measured data; H/P_fit_used includes both. Residuals/RMS
+exclude padding, with observation/padding/total counts saved separately.
+The saved method_quality_weight is1-input quality, with padding set to0.5. With default
+wscaling=True, the diagonal coefficient penalty is
+v_j = sum_i(G_ij w_i) / sum_i(G_ij), then v /= max(v).
+It uses the whole selected measurement-time design, including unsupported
+rows, exactly like legacy LTL_diag; missing weights become1, coefficients with
+no basis support become1 after normalization, and all-zero quality gives identity.
+The saved regularization_diagonal is v; the same diagonal is used for H and P,
+with their own overall regularization scales. Quality changes the ridge, not
+the observation-error weights. A missing field raises an error unless wscaling
+is disabled; invalid supplied weights outside[0,1]/infinite are rejected.
+Source reader arrays are not mutated. Current live code complements the
+high-is-auroral quality as1-w before averaging; larger complemented quality
+means a stronger coefficient penalty. This input transform differs from the
+earlier direct-quality parity check, while retaining the legacy averaging formula.
+
+Each30s output time produces separate Hall/Pedersen2×2 figures: observed/fit
+conductance above observed/posterior STD. The spline and its posterior STD are
+evaluated continuously at those times; latest-at-or-before observations/STD
+are held unchanged until the next measurement, including padding. Cadence
+starts at the first selected timestamp, with only grid points through the last
+measurement (no extra off-grid terminal frame or extrapolation). --plot-cadence
+sets seconds; --plot-frame indexes the output grid. Titles record model/observed
+timestamps. Saved plot_time/plot_observation_index identify the held inputs,
+and H/P_plot_fit/model_variance/model_std store the continuous-time results.
+Temporal16-frame blocks and coefficient-draw batches evaluate these fields
+without building a full30s tensor design or dense coefficient covariance.
+Observed/fit conductance share the observed-value99th-percentile scale.
+Observed STD and posterior STD have independent scales; posterior STD uses its
+own finite nonnegative99th percentile (0.1S fallback if empty or all zero).
+All limits are reported in the title; there are no colorbars. All output frames are
+plotted by default; --plot-frame restricts to one. Observed STD remains the
+supplied error even when the fit uses uniform weights, plus assigned corner STD.
+
+Optional clean PNG sequences (2026-10-07): --movie true additionally evaluates
+the same coefficients/precision matrix at --movie-step seconds (default5)
+between --movie-start-frame and --movie-stop-frame. These are original input
+indices, start inclusive/stop exclusive; removed fitting frames are not
+renumbered. Evaluation spans the first through last selected source timestamp
+and must stay within retained fitted support. Default bounds are first/last
+retained fitting frames. Coarse plot_time outputs and fit parameters are unchanged.
+--movie-output is a directory (default <model_stem>_movie), with hall/hall_0000.png
+and pedersen/pedersen_0000.png sequences. No video encoder is invoked.
+The2×2 PNGs have only '<type> : <evaluation UTC time>' above panels titled
+Observed conductance / Modeled conductance / Observed uncertainty / Model
+variance. All axes/colorbars are hidden. Scales are fixed per component over
+the whole movie interval; conductance panels share one limit. Observations and
+raw STD are held at latest retained measurement. User clarified that
+Model variance is a title change only: its map remains posterior STD in S,
+as in existing plots. Saved movie_model_variance remains S² and is square-rooted
+for that display. Movie fields/time/held indices are saved in NetCDF separately from coarse
+plot fields. Drawing does not modify model arrays.78 focused spline tests pass,
+including identical baseline coefficients/coarse fields, independent tensor
+prediction/variance checks, original-frame gaps, serialization and PNG layout.
+A four-frame orbit150 gate199:203 evaluates movie200:202 every5s (25times),
+with first two PNGs/component reviewed under /tmp/icbuilder_spline_movie_png_20261007.
+ncp6/eight draws are execution checks only. No full orbit or production writes.
+
+Posterior fitted-field variance is diag(G A^-1 G.T), with
+A = G_used.T diag(1/sigma²) G_used + ridge_precision diag(v) and
+ridge_precision = 10**log_regularization times the median nonzero data-precision
+diagonal, including corner constraints. This assumes independent measurement errors and a zero-mean Gaussian
+coefficient ridge prior. It excludes new-observation noise, model discrepancy
+and inter-pixel covariance; uniform weighting assumes sigma=1S for observations.
+The posterior is also conditional on the imposed zero corner values. Saved fields
+H/P_model_variance have unitsS²; H/P_model_std are their square roots inS.
+The sparse CHOLMOD factor is reused. For P A P.T = L D L.T, perturbations
+P.T L^-T D^-1/2 z have covariance A^-1. The default512 Gaussian coefficient
+draws in batches of16 estimate the nonnegative diagonal with relative sampling
+STD sqrt(2/512)=6.25%. Seed1337 (H)/1338 (P) is saved. Exact mode solves A
+against each output basis vector in batches; it avoids a dense inverse but is
+slower for a full orbit. CLI exposes method, samples, seed and batch size.
+
+Verified2026-10-06:38 numerical/plot checks cover independent off-grid tensor
+reconstruction, irregular UTC/rectangular grids, polynomial recovery, own P
+errors, validity masks, exact/dense covariance agreement, CHOLMOD permutation,
+sampled convergence, error scaling, corner constraints, source preservation,
+whole-orbit versus transient support, separate2×2 figures/no colorbars, actual
+legacy quality-penalty comparison, independent dense quality-scaled fit/posterior,
+continuous30s evaluation and held observed maps. The prior variance code had
+an independent review with no material issues. Real orbit150 first4frames,
+ncp16,512 draws, plotted output1:13 cadence frames,1,709 measured samples +168
+zeros/component, penalty range0.001057–1.0, padded quality0.5. Run1.0s with
+RMS H/P0.268/0.211S; these are machine-dependent short-run timing and training
+residuals, not full-orbit timing or physical validation. Source arrays preserved,
+NetCDF reopened and interpolated Hall PNG reviewed. Scratch
+/tmp/icbuilder_spline_cadence_20261006. Earlier unscaled corner/variance gates
+remain at /tmp/icbuilder_spline_corners_20261006 and
+/tmp/icbuilder_spline_variance_test_20261006. No full257-frame orbit run here.
+
 `scripts/make_spline_model_files.py` reads conductance products through
 `icReader`, constructs `icbuilder.splineimage.SplineImage`, and writes spline
 and factor NetCDF products. Historical parameter exploration and resolution

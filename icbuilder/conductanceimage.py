@@ -11,6 +11,7 @@ from icreader import load as icload
 from netCDF4 import Dataset, date2num
 
 from .grids import grid_mlt
+from .precipitationdetector import ELECTRON_METADATA_ATTRIBUTES
 
 
 #%% Conductance product
@@ -39,6 +40,10 @@ class ConductanceImage:
         self.product_type = "conductance"
         self.schema_version = 2
         self.precipitation_method = precipitation.method
+        if self.precipitation_method == "hardy":
+            for name in ELECTRON_METADATA_ATTRIBUTES:
+                setattr(self, name, getattr(precipitation, name))
+            self.E0_response_range_flag = np.asarray(precipitation.E0_response_range_flag, dtype=np.int8).copy()
         self.proton_flux_source = precipitation.proton_flux_source
         self.proton_energy_model = precipitation.proton_energy_model
         self.proton_energy_uncertainty_method = (
@@ -112,6 +117,9 @@ class ConductanceImage:
             nc.product_type = self.product_type
             nc.schema_version = self.schema_version
             nc.precipitation_method = self.precipitation_method
+            if self.precipitation_method == "hardy":
+                for name in ELECTRON_METADATA_ATTRIBUTES:
+                    nc.setncattr(name, getattr(self, name))
             nc.proton_flux_source = self.proton_flux_source
             nc.proton_energy_model = self.proton_energy_model
             nc.proton_energy_uncertainty_method = self.proton_energy_uncertainty_method
@@ -175,6 +183,12 @@ class ConductanceImage:
                 variable = nc.createVariable(name, "f4", ("time", "dim1", "dim2"), zlib=True)
                 variable[:] = data
                 variable.units = units
+
+            if self.precipitation_method == "hardy":
+                flag = nc.createVariable("E0_response_range_flag", "i1", ("time", "dim1", "dim2"), zlib=True)
+                flag[:] = self.E0_response_range_flag
+                flag.flag_values = np.asarray([-1, 0, 1, 2], dtype=np.int8)
+                flag.flag_meanings = "unavailable in_range below above"
 
             clipped = nc.createVariable(
                 "Ep_clipping_flag", "i1", ("time", "dim1", "dim2"), zlib=True

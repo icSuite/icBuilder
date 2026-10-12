@@ -20,6 +20,7 @@ from icbuilder.detectorcs import (
     build_precipitation_cs_product,
 )
 from icbuilder.grids import DETECTOR_CS_GRID_ID
+from icbuilder.precipitationdetector import ELECTRON_METADATA_ATTRIBUTES
 from icbuilder.precipitationcs import SCHEMA_VERSION as PRECIPITATION_CS_SCHEMA_VERSION
 from icbuilder.conductancecs import SCHEMA_VERSION as CONDUCTANCE_CS_SCHEMA_VERSION
 
@@ -36,6 +37,14 @@ def _common_cs_status(product, product_type, schema_version):
         or product.binning_method != BINNING_METHOD
     ):
         return "invalid"
+    method = product.attrs.get("method", product.attrs.get("precipitation_method"))
+    if method == "hardy":
+        for name in ELECTRON_METADATA_ATTRIBUTES:
+            if name not in product.attrs:
+                return "invalid"
+        for name in ("E0_response_range_fraction", "E0_response_range_any"):
+            if not hasattr(product, name) or getattr(product, name).shape != product.shape:
+                return "invalid"
     return "complete"
 
 
@@ -51,7 +60,7 @@ def precipitation_cs_file_status(filename, source_precipitation):
 
     try:
         source_stat = source_precipitation.stat()
-        with open_product(filename) as product:
+        with open_product(filename) as product, open_product(source_precipitation) as source:
             status = _common_cs_status(
                 product,
                 "precipitation_cs",
@@ -59,6 +68,12 @@ def precipitation_cs_file_status(filename, source_precipitation):
             )
             if status != "complete":
                 return status
+            if source.method == "hardy":
+                if product.method != source.method:
+                    return "mismatch"
+                for name in ELECTRON_METADATA_ATTRIBUTES:
+                    if product.attrs[name] != source.attrs[name]:
+                        return "mismatch"
             if not hasattr(product, "si12") or not hasattr(product, "dsi12"):
                 return "invalid"
             if (
@@ -96,7 +111,7 @@ def conductance_cs_file_status(
 
     try:
         source_stat = source_conductance.stat()
-        with open_product(filename) as product:
+        with open_product(filename) as product, open_product(source_conductance) as source:
             status = _common_cs_status(
                 product,
                 "conductance_cs",
@@ -104,6 +119,12 @@ def conductance_cs_file_status(
             )
             if status != "complete":
                 return status
+            if source.precipitation_method == "hardy":
+                if product.precipitation_method != source.precipitation_method:
+                    return "mismatch"
+                for name in ELECTRON_METADATA_ATTRIBUTES:
+                    if product.attrs[name] != source.attrs[name]:
+                        return "mismatch"
             if (
                 product.source_conductance_detector != str(source_conductance)
                 or int(product.attrs["source_conductance_detector_size_bytes"])

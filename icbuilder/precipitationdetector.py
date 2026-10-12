@@ -10,6 +10,12 @@ from icphysics import (
     PROTON_RESPONSE_ENERGY_RANGE,
     hardy_ion_precipitation,
     precipitation_from_ratio,
+    precipitation_from_hardy,
+    ELECTRON_RESPONSE_ENERGY_RANGE,
+    HARDY_ELECTRON_MODEL_DOI,
+    HARDY_ELECTRON_COEFFICIENT_VERSION,
+    HARDY_ELECTRON_KP_POLICY,
+    HARDY_ELECTRON_UNCERTAINTY_METHOD,
     proton_correct_images,
 )
 from netCDF4 import Dataset, date2num
@@ -39,6 +45,41 @@ PREPROCESSING_METADATA_ATTRIBUTES = (
     "method_quality_weight_spatial_propagation",
 )
 PRECIPITATION_METHOD = "image_ratio"
+PRECIPITATION_METHODS = ("image_ratio", "hardy")
+
+# These optional attributes travel with Hardy energy through all representations.
+ELECTRON_METADATA_ATTRIBUTES = (
+    "electron_energy_model", "electron_energy_source",
+    "electron_coefficient_source", "electron_kp_policy", "electron_model_domain",
+    "electron_energy_coordinate_note", "electron_energy_uncertainty_method",
+    "electron_response_energy_min", "electron_response_energy_max",
+    "electron_response_out_of_range_policy"
+)
+HARDY_UNSUBTRACTED_QUALITY_WEIGHT_METHOD = (
+    "uniform weight on WIC and SI12 detector count support independently of "
+    "Hardy-retrieval success; diagnostic SI13 and background-fit dgweight are not used"
+)
+
+
+def hardy_electron_metadata(coordinate_note):
+    """Scientific provenance for the fixed-energy WIC retrieval."""
+
+    return {
+        "electron_energy_model": "hardy",
+        "electron_energy_source": HARDY_ELECTRON_MODEL_DOI,
+        "electron_coefficient_source": HARDY_ELECTRON_COEFFICIENT_VERSION,
+        "electron_kp_policy": HARDY_ELECTRON_KP_POLICY,
+        "electron_model_domain": "northern corrected geomagnetic latitude 50–90 degrees",
+        "electron_energy_coordinate_note": coordinate_note,
+        "electron_energy_uncertainty_method": HARDY_ELECTRON_UNCERTAINTY_METHOD,
+        "electron_response_energy_min": ELECTRON_RESPONSE_ENERGY_RANGE[0],
+        "electron_response_energy_max": ELECTRON_RESPONSE_ENERGY_RANGE[1],
+        "electron_response_out_of_range_policy": (
+            "retain raw Hardy mean energy; hold WIC response at nearest table endpoint; "
+            "flag 0=in_range, 1=below, 2=above, -1=unavailable"
+        )
+    }
+
 PROTON_ENERGY_MODELS = ("hardy", "constant")
 COUNT_SOURCES = ("background_subtracted", "unsubtracted")
 DEFAULT_WIC_SMOOTHING_WIDTH = 0.8
@@ -394,13 +435,14 @@ def smooth_detector_sensor(
 #%% Detector precipitation
 
 class PrecipitationDetector:
-    """Apply the image-ratio precipitation method to one fuv_detector orbit."""
+    """Apply a selected precipitation method to one fuv_detector orbit."""
 
     def __init__(
         self,
         fuv_detector,
         *,
         kp_series=None,
+        method=PRECIPITATION_METHOD,
         proton_energy_model="hardy",
         proton_energy=2.0,
         proton_energy_uncertainty=0.0,
@@ -411,6 +453,8 @@ class PrecipitationDetector:
         si13_smoothing_width=DEFAULT_SI13_SMOOTHING_WIDTH,
         software_version="unrecorded experimental worktree",
     ):
+        if method not in PRECIPITATION_METHODS:
+            raise ValueError(f"method must be one of {PRECIPITATION_METHODS}")
         if count_source not in COUNT_SOURCES:
             raise ValueError(f"count_source must be one of {COUNT_SOURCES}")
         fuv = load_fuv_detector(
@@ -423,7 +467,10 @@ class PrecipitationDetector:
         self.product_type = "precipitation_detector"
         self.representation = "detector"
         self.schema_version = SCHEMA_VERSION
-        self.method = PRECIPITATION_METHOD
+        self.method = method
+        if method == "hardy":
+            for name, value in hardy_electron_metadata(HARDY_COORDINATE_NOTE).items():
+                setattr(self, name, value)
         self.count_source = count_source
         self.proton_flux_source = PROTON_FLUX_SOURCE
         self.proton_energy_model = proton_energy_model
@@ -521,7 +568,10 @@ class PrecipitationDetector:
             self.wic_valid &= self.wic_unsubtracted_valid
             self.si12_valid &= self.si12_unsubtracted_valid
             self.si13_valid &= self.si13_unsubtracted_valid
-            self.method_quality_weight_method = UNSUBTRACTED_QUALITY_WEIGHT_METHOD
+            self.method_quality_weight_method = (
+                HARDY_UNSUBTRACTED_QUALITY_WEIGHT_METHOD if method == "hardy"
+                else UNSUBTRACTED_QUALITY_WEIGHT_METHOD
+            )
 
         wic_method_valid = self.wic_valid
         si12_method_valid = self.si12_valid
@@ -600,17 +650,18 @@ class PrecipitationDetector:
         input_valid = (
             wic_method_valid
             & si12_method_valid
-            & si13_method_valid
             & np.isfinite(self.Ep)
         )
+        if method == "image_ratio":
+            input_valid &= si13_method_valid
         wic = np.where(input_valid, wic_counts, np.nan)
         si12 = np.where(input_valid, si12_counts, np.nan)
-        si13 = np.where(input_valid, si13_counts, np.nan)
+        si13 = np.where(input_valid & si13_method_valid, si13_counts, np.nan)
 
         # 4. Infer proton flux from mapped SI12, then correct WIC and SI13.
         dwic = np.where(input_valid, np.sqrt(wic_variance), np.nan)
         dsi12 = np.where(input_valid, np.sqrt(si12_variance), np.nan)
-        dsi13 = np.where(input_valid, np.sqrt(si13_variance), np.nan)
+        dsi13 = np.where(input_valid & si13_method_valid, np.sqrt(si13_variance), np.nan)
         self.si12 = np.where(input_valid, unsmoothed_si12_counts, np.nan)
         self.dsi12 = np.where(
             input_valid, np.sqrt(unsmoothed_si12_variance), np.nan
@@ -631,22 +682,32 @@ class PrecipitationDetector:
         for name, values in corrected.items():
             setattr(self, name, np.asarray(values, dtype=float))
 
-        # 5. Calculate image-ratio electron energy and energy flux.
-        # Keep central values when a propagated uncertainty becomes undefined.
-        dwic_for_ratio = np.where(
-            np.isfinite(self.dwic_corrected), self.dwic_corrected, 0.0
-        )
-        dsi13_for_ratio = np.where(
-            np.isfinite(self.dsi13_corrected), self.dsi13_corrected, 0.0
-        )
-        ratio = precipitation_from_ratio(
-            self.wic_corrected,
-            dwic_for_ratio,
-            self.si13_corrected,
-            dsi13_for_ratio,
-        )
-        for name, values in ratio.items():
-            setattr(self, name, np.asarray(values, dtype=float))
+        # 5. Retrieve electron precipitation. SI13 is diagnostic for Hardy.
+        if method == "image_ratio":
+            # Keep nominal values when measurement uncertainty is unavailable.
+            dwic_for_ratio = np.where(np.isfinite(self.dwic_corrected), self.dwic_corrected, 0.0)
+            dsi13_for_ratio = np.where(np.isfinite(self.dsi13_corrected), self.dsi13_corrected, 0.0)
+            result = precipitation_from_ratio(
+                self.wic_corrected, dwic_for_ratio,
+                self.si13_corrected, dsi13_for_ratio
+            )
+        else:
+            result = precipitation_from_hardy(
+                self.wic_corrected, self.dwic_corrected,
+                self.kp[:, None, None], self.mlt, self.mlat
+            )
+            # Keep the observed camera ratio as an optional diagnostic.
+            with np.errstate(divide="ignore", invalid="ignore"):
+                self.R = self.wic_corrected / self.si13_corrected
+                self.dR = np.sqrt(
+                    (self.dwic_corrected / self.si13_corrected)**2
+                    + (self.wic_corrected * self.dsi13_corrected / self.si13_corrected**2)**2
+                )
+            self.R[~np.isfinite(self.R)] = np.nan
+            self.dR[~np.isfinite(self.dR)] = np.nan
+        for name, values in result.items():
+            dtype = np.int8 if name == "E0_response_range_flag" else float
+            setattr(self, name, np.asarray(values, dtype=dtype))
 
         # 6. Retain input support separately from successful method output.
         self.method_valid = input_valid & np.isfinite(self.E0) & np.isfinite(self.Fe)
@@ -659,24 +720,25 @@ class PrecipitationDetector:
             quality_valid = (
                 wic_method_valid
                 & si12_method_valid
-                & si13_method_valid
                 & np.isfinite(quality_weights["wic"])
                 & np.isfinite(quality_weights["si12"])
-                & np.isfinite(quality_weights["si13"])
             )
+            if method == "image_ratio":
+                quality_valid &= si13_method_valid & np.isfinite(quality_weights["si13"])
             method_quality_weight = np.ones(self.shape)
         self.method_quality_weight = np.where(
             quality_valid, method_quality_weight, np.nan
         )
-        uncertain = ~(
-            np.isfinite(self.dwic_corrected)
-            & np.isfinite(self.dsi13_corrected)
-            & self.method_valid
-        )
-        for name in ("dR", "dE0", "dFe"):
-            values = getattr(self, name).copy()
-            values[uncertain] = np.nan
-            setattr(self, name, values)
+        if method == "image_ratio":
+            uncertain = ~(
+                np.isfinite(self.dwic_corrected)
+                & np.isfinite(self.dsi13_corrected)
+                & self.method_valid
+            )
+            for name in ("dR", "dE0", "dFe"):
+                values = getattr(self, name).copy()
+                values[uncertain] = np.nan
+                setattr(self, name, values)
 
         # Raw counts remain in the referenced Product 1 and are not duplicated
         # in Product 2 after the precipitation calculation is complete.
@@ -722,6 +784,9 @@ class PrecipitationDetector:
             nc.representation = self.representation
             nc.schema_version = self.schema_version
             nc.method = self.method
+            if self.method == "hardy":
+                for name in ELECTRON_METADATA_ATTRIBUTES:
+                    nc.setncattr(name, getattr(self, name))
             nc.count_source = self.count_source
             nc.method_quality_weight_method = self.method_quality_weight_method
             nc.proton_flux_source = self.proton_flux_source
@@ -875,6 +940,12 @@ class PrecipitationDetector:
             for name in ("wic_valid", "si12_valid", "si13_valid", "method_valid"):
                 variable = nc.createVariable(name, "i1", dimensions, zlib=True)
                 variable[:] = getattr(self, name).astype(np.int8)
+
+            if self.method == "hardy":
+                flag = nc.createVariable("E0_response_range_flag", "i1", dimensions, zlib=True)
+                flag[:] = self.E0_response_range_flag
+                flag.flag_values = np.asarray([-1, 0, 1, 2], dtype=np.int8)
+                flag.flag_meanings = "unavailable in_range below above"
 
             clipped = nc.createVariable(
                 "Ep_clipping_flag", "i1", dimensions, zlib=True

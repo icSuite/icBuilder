@@ -1,6 +1,6 @@
 # Detector-First Product Architecture
 
-Last reviewed: 2026-09-20
+Last reviewed: 2026-10-05 (CS coverage/uncertainty interpretation)
 
 Status: The detector-first direction is accepted. Detector Product 1,
 image-ratio Product 2, and Robinson Product 3 are implemented on the selected
@@ -231,6 +231,9 @@ Product 1 should contain, per WIC frame and detector pixel:
 - selected WIC counts and a detector-noise uncertainty when one is defined;
 - coregistered SI12 and SI13 counts and propagated detector-noise uncertainty
   when one is defined;
+- calibrated unsubtracted WIC, SI12, and SI13 counts on the same detector
+  geometry, with separate validity masks, for controlled background-removal
+  sensitivity tests;
 - separate WIC, SI12, and SI13 quality weights or validity fields;
 - SI12 and SI13 coregistration coverage and source-support diagnostics;
 - WIC detector row and column;
@@ -251,6 +254,15 @@ spread and must not be relabelled as detector noise. Background-model
 uncertainty, calibration uncertainty, and covariance induced between target
 pixels remain explicit later gates.
 
+The unsubtracted fields are an additive schema-2 diagnostic extension. The
+existing `wic_counts`, `si12_counts`, and `si13_counts` retain their `dgimg`
+background-subtracted meaning. The added `*_unsubtracted_counts` fields come
+from native `img`; SI uses the exact same time match and footprint-overlap
+operator as its background-subtracted counterpart. Measurement variance is
+shared because fuvpy provides `img_variance`, while background-model
+uncertainty remains unmodelled. Background-fit `dgweight` does not describe
+the unsubtracted measurement and must not be used as its scientific weight.
+
 ## Product 2: precipitation on the WIC detector geometry
 
 ### Scientific role
@@ -268,7 +280,7 @@ The time axis and detector geometry remain aligned with Product 1. Cells or
 frames lacking a required input are invalid for that method rather than being
 silently removed from the orbit.
 
-The schema-2 experimental implementation provides the `image_ratio` path.
+The schema-3 experimental implementation provides the `image_ratio` path.
 It preserves every Product-1 WIC frame, applies Hardy or constant proton
 energy on the time-dependent detector coordinates, uses the provisional
 map-SI12-counts-then-infer-flux order, supplies the square roots of Product-1
@@ -276,6 +288,16 @@ count variances to icPhysics, and stores method validity separately from the
 three input-channel validity fields. This is a parity product, not a
 candidate publication retrieval. The detector-compatible Zhang--Paxton path
 remains the next separate implementation step.
+
+The ratio path has an explicit `count_source` configuration. The canonical
+`background_subtracted` branch consumes Product-1 `dgimg` counts and retains
+the product of fuvpy `dgweight` fields as its method weight. The diagnostic
+`unsubtracted` branch consumes Product-1 `img` counts on the intersection of
+ordinary and unsubtracted validity, reuses the same measurement variances,
+and assigns unit method weight on successful support because `dgweight` is not
+a quality measure for an unsubtracted observation. All downstream proton and
+electron calculations are otherwise identical. The selected source and weight
+meaning are serialized as Product-2 metadata.
 
 ### Provisional calculation order
 
@@ -404,6 +426,50 @@ consume it when correlated observation error matters.
 Constant-field reproduction and area-integral conservation are different
 tests. A renormalized overlap mean can pass the former while hiding missing
 covered area in the latter. Validate and report both.
+
+### Verified CS coverage and uncertainty interpretation (2026-10-05)
+
+This is a shared Product-2/Product-3 CS conversion issue, not a conductance-only
+issue. `precipitationcs.py` and `conductancecs.py` both call the same mean,
+variance, covariance, and support reducers in `detectorcs.py`. Product 2
+reduces precipitation and diagnostic fields over method-valid support;
+Product 3 reduces H/P and carried precipitation fields over conductance-valid
+support. Empty field support produces NaN; the CS `method_valid` (P2) and
+`conductance_valid` (P3) flags mean only `coverage > 0` on their respective
+source support. Support can differ between products and individual fields.
+`detectorcs.py` stores coverage as summed valid footprint overlap divided by
+projected cell area, clipped to one. It is not a geometric union calculation,
+so a value of one does not independently prove complete geometric coverage.
+
+The stored variance is `sum(a_i**2 * variance_i) / sum(a_i)**2`, with
+field-specific finite uncertainty support. There is no extra low-coverage
+inflation or estimate of the unobserved part of a cell. Executing the live
+reducer with two independent inputs of uncertainty 2 gives uncertainty
+sqrt(2) at both coverage 1 and 0.1 when all overlaps are scaled together;
+one contributing input at coverage 0.1 gives uncertainty 2. Loss of independent
+contributors can raise uncertainty, but shrinking overlap alone need not.
+The independence approximation also omits covariance from shared SI inputs
+and Product-2 Gaussian smoothing.
+
+Distinguish the overlap mean over observed support from a full-cell mean.
+For an ideal disjoint observed fraction f, the latter is
+`f * mean_observed + (1-f) * mean_missing`; using the observed mean for the
+whole cell incurs discrepancy `(1-f) * (mean_observed - mean_missing)`.
+This is a separate spatial-representativeness error requiring a field model
+or empirical validation. Coverage alone supplies neither its magnitude nor
+a universal nonzero cutoff. A `1/sqrt(coverage)` multiplier is not implied by
+the current propagation and can double-count lost-contributor effects.
+
+**Proposed, not adopted:** validate partial-cell means by imposing realistic
+contiguous boundary/hole masks on well-covered detector frames and comparing
+against their unmasked CS means. Preserve the actual resolution/smoothing,
+separate measurement noise from masking discrepancies, include spatial
+gradients and retrieval-driven missingness, and evaluate on held-out orbits.
+Evaluate precipitation, conductance, and relevant diagnostic quantities
+against their own error tolerances. Any representation-error treatment belongs
+to the shared CS conversion, although its magnitude and any justified cutoff
+can depend on the field and product support. No cutoff or uncertainty
+correction was implemented or approved at this checkpoint.
 
 ### Which CS products to store
 

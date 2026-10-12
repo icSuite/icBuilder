@@ -22,7 +22,8 @@ from .fuvdetector import source_identity
 from .grids import DETECTOR_CS_GRID_ID
 from .precipitationdetector import (
     COUNT_UNCERTAINTY_MODE,
-    PRECIPITATION_METHOD,
+    PRECIPITATION_METHODS,
+    ELECTRON_METADATA_ATTRIBUTES,
     SCHEMA_VERSION as DETECTOR_SCHEMA_VERSION,
 )
 
@@ -81,12 +82,12 @@ def _require_source(source, filename):
         source.product_type != "precipitation_detector"
         or source.representation != "detector"
         or int(source.schema_version) != DETECTOR_SCHEMA_VERSION
-        or source.method != PRECIPITATION_METHOD
+        or source.method not in PRECIPITATION_METHODS
         or source.count_uncertainty_mode != COUNT_UNCERTAINTY_MODE
     ):
         raise ValueError(
             f"{filename} is not a supported schema-{DETECTOR_SCHEMA_VERSION} "
-            f"{PRECIPITATION_METHOD} precipitation_detector product"
+            "supported-method precipitation_detector product"
         )
 
     return source.shape
@@ -110,6 +111,11 @@ class PrecipitationCS:
         self.time_fields = read_common_time_fields(source)
 
         self.method = source.method
+        if self.method == "hardy":
+            for name in ELECTRON_METADATA_ATTRIBUTES:
+                setattr(self, name, source.attrs[name])
+            self.E0_response_range_fraction = np.full(self.shape, np.nan)
+            self.E0_response_range_any = np.zeros(self.shape, dtype=bool)
         self.count_source = source.count_source
         self.smoothed = bool(int(source.attrs["smoothed"]))
         self.smoothing_method = source.attrs["smoothing_method"]
@@ -250,6 +256,13 @@ class PrecipitationCS:
         self.method_uncertainty_valid[frame] = uncertainty_coverage > 0
         self.Ep_clipping_fraction[frame] = clipping_fraction
         self.Ep_clipping_any[frame] = clipping_any
+        if self.method == "hardy":
+            fraction, any_flag = reduce_flag_fraction(
+                np.asarray(source.read("E0_response_range_flag", frame), dtype=np.int8) > 0,
+                method_valid, mapping, output_shape
+            )
+            self.E0_response_range_fraction[frame] = fraction
+            self.E0_response_range_any[frame] = any_flag
 
     def reduce(self, source, mappings, cell_area):
         """Reduce the orbit while reading each compressed variable only once."""
@@ -296,6 +309,8 @@ class PrecipitationCS:
                 )
                 getattr(self, name)[frame] = reduced
 
+        if self.method == "hardy":
+            response_flag = np.asarray(source.read("E0_response_range_flag"), dtype=np.int8) > 0
         clipping_flag = np.asarray(
             source.read("Ep_clipping_flag"), dtype=bool
         )
@@ -320,6 +335,12 @@ class PrecipitationCS:
             self.method_uncertainty_valid[frame] = uncertainty_coverage > 0
             self.Ep_clipping_fraction[frame] = clipping_fraction
             self.Ep_clipping_any[frame] = clipping_any
+            if self.method == "hardy":
+                fraction, any_flag = reduce_flag_fraction(
+                    response_flag[frame], method_valid[frame], mapping, output_shape
+                )
+                self.E0_response_range_fraction[frame] = fraction
+                self.E0_response_range_any[frame] = any_flag
 
     def to_nc(self, filename):
         """Write one fixed-grid precipitation orbit."""
@@ -334,6 +355,9 @@ class PrecipitationCS:
             nc.binning_method = BINNING_METHOD
             nc.uncertainty_method = UNCERTAINTY_METHOD
             nc.method = self.method
+            if self.method == "hardy":
+                for name in ELECTRON_METADATA_ATTRIBUTES:
+                    nc.setncattr(name, getattr(self, name))
             nc.count_source = self.count_source
             nc.smoothed = np.int8(self.smoothed)
             nc.smoothing_method = self.smoothing_method
@@ -398,6 +422,13 @@ class PrecipitationCS:
                 nc.setncattr(f"kp_{name}", value)
 
             dimensions = ("time", "dim1", "dim2")
+            if self.method == "hardy":
+                fraction = nc.createVariable("E0_response_range_fraction", "f4", dimensions, zlib=True)
+                fraction[:] = self.E0_response_range_fraction
+                fraction.units = "1"
+                fraction.long_name = "fraction of valid overlap area using endpoint WIC response"
+                flag = nc.createVariable("E0_response_range_any", "i1", dimensions, zlib=True)
+                flag[:] = self.E0_response_range_any.astype(np.int8)
             for name, units in (
                 list(MEAN_FIELDS.items())
                 + list(UNCERTAINTY_FIELDS.items())

@@ -1,4 +1,4 @@
-"""Build image-ratio precipitation on the WIC detector geometry."""
+"""Build selected electron precipitation on the WIC detector geometry."""
 
 #%% Imports
 
@@ -22,6 +22,10 @@ from icbuilder.precipitationdetector import (
     DEFAULT_SI13_SMOOTHING_WIDTH,
     DEFAULT_WIC_SMOOTHING_WIDTH,
     PRECIPITATION_METHOD,
+    PRECIPITATION_METHODS,
+    HARDY_UNSUBTRACTED_QUALITY_WEIGHT_METHOD,
+    hardy_electron_metadata,
+    HARDY_COORDINATE_NOTE,
     PROTON_ENERGY_MODELS,
     SCHEMA_VERSION,
     SOURCE_TIME_DECODING,
@@ -44,6 +48,7 @@ def precipitation_detector_file_status(
     wic_smoothing_width=DEFAULT_WIC_SMOOTHING_WIDTH,
     si12_smoothing_width=DEFAULT_SI12_SMOOTHING_WIDTH,
     si13_smoothing_width=DEFAULT_SI13_SMOOTHING_WIDTH,
+    method=PRECIPITATION_METHOD,
 ):
     """Return missing, invalid, mismatch, or complete for one Product-2 file."""
 
@@ -60,7 +65,7 @@ def precipitation_detector_file_status(
             ):
                 return "invalid"
             if (
-                product.method != PRECIPITATION_METHOD
+                product.method != method
                 or product.proton_flux_source != "SI12"
                 or product.proton_energy_model != proton_energy_model
                 or product.source_fuv_detector != str(source_fuv_detector)
@@ -75,6 +80,16 @@ def precipitation_detector_file_status(
                 if count_source == "background_subtracted"
                 else UNSUBTRACTED_QUALITY_WEIGHT_METHOD
             )
+            if method == "hardy" and count_source == "unsubtracted":
+                expected_quality_method = HARDY_UNSUBTRACTED_QUALITY_WEIGHT_METHOD
+            if method == "hardy":
+                expected_metadata = hardy_electron_metadata(HARDY_COORDINATE_NOTE)
+                if any(product.attrs.get(name) != value for name, value in expected_metadata.items()):
+                    return "mismatch"
+                if not hasattr(product, "E0_response_range_flag"):
+                    return "invalid"
+                if product.E0_response_range_flag.shape != product.shape:
+                    return "invalid"
             if product.method_quality_weight_method != expected_quality_method:
                 return "invalid"
             expected_widths = resolve_smoothing_configuration(
@@ -134,6 +149,7 @@ def save_precipitation_detector(product, filename):
             product.wic_smoothing_width_pixels,
             product.si12_smoothing_width_pixels,
             product.si13_smoothing_width_pixels,
+            product.method,
         )
         if status != "complete":
             raise RuntimeError(f"incomplete precipitation_detector file: {partial}")
@@ -193,6 +209,7 @@ def process_orbit(
     wic_smoothing_width=DEFAULT_WIC_SMOOTHING_WIDTH,
     si12_smoothing_width=DEFAULT_SI12_SMOOTHING_WIDTH,
     si13_smoothing_width=DEFAULT_SI13_SMOOTHING_WIDTH,
+    method=PRECIPITATION_METHOD,
 ):
     """Calculate and save one detector-space precipitation orbit."""
 
@@ -201,6 +218,7 @@ def process_orbit(
         product = PrecipitationDetector(
             source,
             kp_series=kp_series,
+            method=method,
             proton_energy_model=proton_energy_model,
             proton_energy=proton_energy,
             proton_energy_uncertainty=proton_energy_uncertainty,
@@ -225,7 +243,7 @@ def process_orbit(
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        description="Create image-ratio precipitation on WIC detector pixels."
+        description="Create image-ratio or Hardy precipitation on WIC detector pixels."
     )
     parser.add_argument(
         "--base-input", "--base",
@@ -251,6 +269,7 @@ def parse_args(argv=None):
         ),
     )
     parser.add_argument("--orbit", action="append", type=int)
+    parser.add_argument("--precipitation-method", choices=PRECIPITATION_METHODS, default=PRECIPITATION_METHOD)
     parser.add_argument(
         "--proton-energy-model",
         choices=PROTON_ENERGY_MODELS,
@@ -339,9 +358,11 @@ def main(argv=None):
                 f"_si12{width_labels['si12']}"
                 f"_si13{width_labels['si13']}"
             )
-        retrieval_label = (
-            f"IR_{args.proton_energy_model}{count_suffix}{smoothing_suffix}"
+        model_label = (
+            f"IR_{args.proton_energy_model}" if args.precipitation_method == "image_ratio"
+            else f"HardyElectron_{args.proton_energy_model.capitalize()}Proton"
         )
+        retrieval_label = f"{model_label}{count_suffix}{smoothing_suffix}"
     else:
         retrieval_label = args.retrieval_label
     output_directory = base_output / args.output_folder / retrieval_label
@@ -371,6 +392,7 @@ def main(argv=None):
             wic_smoothing_width,
             si12_smoothing_width,
             si13_smoothing_width,
+            args.precipitation_method,
         )
         if status == "mismatch":
             raise ValueError(
@@ -396,6 +418,7 @@ def main(argv=None):
         input_directory=input_directory,
         output_directory=output_directory,
         kp_series=kp_series,
+        method=args.precipitation_method,
         proton_energy_model=args.proton_energy_model,
         proton_energy=args.proton_energy,
         proton_energy_uncertainty=args.proton_energy_uncertainty,
