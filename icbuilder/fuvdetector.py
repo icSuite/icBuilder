@@ -51,6 +51,22 @@ BS_MODEL_CONTRACT = {
     "directional_x_knots": np.asarray([-3.5, 0.0, 1.5, 3.5]),
 }
 
+BS2D_PREPROCESSING_LABEL = "fuvpy_bs2d_sigma2_pointing_v1"
+BS2D_IMAGE_FIELDS = {sensor: "dgimg_independent" for sensor in IMAGE_FIELDS}
+BS2D_X_KNOTS = np.sort(np.r_[-3.5, np.cos(np.deg2rad([70, 80, 85, 90, 95, 100, 110, 120])), 1.5, 3.5])
+BS2D_X_KNOTS[np.abs(BS2D_X_KNOTS) < 1e-12] = 0
+BS2D_MODEL_CONTRACT = {
+    "spatial_model": "x_sine_2d",
+    "spatial_order": 3,
+    "spatial_knots": BS2D_X_KNOTS,
+    "sine_knots": np.asarray([-1.0, 1.0]),
+    "dgsigma_freeze_iteration": 2,
+    "measurement_variance": "img_variance",
+    "monotonic_constraint": "nondecreasing_x_at_every_sine_time_control",
+    "tukey_value": 5.0,
+    "convergence_tolerance": 0.01
+}
+
 
 def describe_time_match_rule(tolerance_seconds):
     """Describe the complete WIC-led matching rule for product provenance."""
@@ -153,55 +169,75 @@ def _source_times(nc):
     return np.asarray(decoded, dtype=object)
 
 
-def _validate_background_model(nc, filename):
+def _validate_background_model(nc, filename, preprocessing_label=PREPROCESSING_LABEL):
     """Require the fuvpy BS configuration named by the product label."""
 
-    if "dgmodel" not in nc.variables:
-        raise ValueError(f"{filename} is missing source field: dgmodel")
-    model = nc.variables["dgmodel"]
-    for name, expected in BS_MODEL_CONTRACT.items():
-        if name not in model.ncattrs():
-            raise ValueError(f"{filename} dgmodel is missing metadata: {name}")
-        actual = model.getncattr(name)
-        if isinstance(expected, str):
-            matches = str(actual) == expected
-        else:
-            matches = np.allclose(actual, expected, rtol=0, atol=1e-12)
-        if not matches:
-            raise ValueError(
-                f"{filename} dgmodel metadata {name} does not match "
-                f"{PREPROCESSING_LABEL}"
-            )
+    contracts = {"dgmodel": BS_MODEL_CONTRACT}
+    if preprocessing_label == BS2D_PREPROCESSING_LABEL:
+        contracts = {
+            "dgmodel": {**BS2D_MODEL_CONTRACT, "noise_model": "binned", "temporal_knot_spacing_target_minutes": 120.0},
+            "dgmodel_independent": {**BS2D_MODEL_CONTRACT, "noise_model": "supplied_quadratic", "shape_prior": "none"}
+        }
+        if getattr(nc, "pointing_correction_applied", 0) != 1 or getattr(nc, "pointing_reference_sensor", "") != "WIC":
+            raise ValueError(f"{filename} requires shared WIC metadata pointing correction")
+        if getattr(nc, "pointing_correction_method", "") != "clock_phase":
+            raise ValueError(f"{filename} requires clock_phase metadata correction")
+        for name in ("dgfit_converged", "dgfit_converged_independent"):
+            if name not in nc.variables or not np.all(_as_float(nc.variables[name]) == 1):
+                raise ValueError(f"{filename} requires converged temporal and independent fits")
+
+    for field, contract in contracts.items():
+        if field not in nc.variables:
+            raise ValueError(f"{filename} is missing source field: {field}")
+        model = nc.variables[field]
+        for name, expected in contract.items():
+            if name not in model.ncattrs():
+                raise ValueError(f"{filename} {field} is missing metadata: {name}")
+            actual = model.getncattr(name)
+            if isinstance(expected, str):
+                matches = str(actual) == expected
+            else:
+                matches = np.shape(actual) == np.shape(expected) and np.allclose(actual, expected, rtol=0, atol=1e-12)
+            if not matches:
+                raise ValueError(f"{filename} {field} metadata {name} does not match {preprocessing_label}")
 
 
-def load_detector_source(filename, sensor):
+def load_detector_source(filename, sensor, *, preprocessing_label=PREPROCESSING_LABEL):
     """Load corrected and unsubtracted images on native detector geometry."""
 
     sensor = sensor.upper()
     if sensor not in IMAGE_FIELDS:
         raise ValueError("sensor must be WIC, SI12, or SI13")
+    if preprocessing_label not in (PREPROCESSING_LABEL, BS2D_PREPROCESSING_LABEL):
+        raise ValueError(f"unsupported preprocessing label: {preprocessing_label}")
     image_field = IMAGE_FIELDS[sensor]
+    weight_field = "dgweight"
+    if preprocessing_label == BS2D_PREPROCESSING_LABEL:
+        image_field = BS2D_IMAGE_FIELDS[sensor]
+        weight_field = "dgweight_independent"
     unsubtracted_image_field = UNSUBTRACTED_IMAGE_FIELDS[sensor]
 
     filename = Path(filename)
     with Dataset(filename) as nc:
         required = (
             image_field, unsubtracted_image_field,
-            "dgweight", "img_variance", "frame_quality",
+            weight_field, "img_variance", "frame_quality",
             "glat", "glon", "sza", "dza", "date", "t_start",
         )
+        if preprocessing_label == BS2D_PREPROCESSING_LABEL:
+            required += ("dgimg", "dgweight", "dgsigma", "dgsigma_independent")
         missing = [name for name in required if name not in nc.variables]
         if missing:
             raise ValueError(
                 f"{filename} is missing source fields: {', '.join(missing)}"
             )
-        _validate_background_model(nc, filename)
+        _validate_background_model(nc, filename, preprocessing_label)
 
         counts = _as_float(nc.variables[image_field])
         unsubtracted_counts = _as_float(
             nc.variables[unsubtracted_image_field]
         )
-        dgweight = _as_float(nc.variables["dgweight"])
+        dgweight = _as_float(nc.variables[weight_field])
         variance = _as_float(nc.variables["img_variance"])
         frame_quality = _as_float(nc.variables["frame_quality"])
         glat = _as_float(nc.variables["glat"])
@@ -383,16 +419,20 @@ class FUVDetector:
         for name in ("mlat", "mlon", "mlt", "ssalon"):
             if name not in wic:
                 raise ValueError(f"WIC detector data is missing {name}")
-        if preprocessing_label != PREPROCESSING_LABEL:
+        if preprocessing_label not in (PREPROCESSING_LABEL, BS2D_PREPROCESSING_LABEL):
             raise ValueError(
-                f"this implementation supports only {PREPROCESSING_LABEL}; "
+                f"this implementation supports only {PREPROCESSING_LABEL} and {BS2D_PREPROCESSING_LABEL}; "
                 "another label requires an explicit preprocessing branch"
             )
+        if preprocessing_label == BS2D_PREPROCESSING_LABEL:
+            for source in (wic, si12, si13):
+                if source is None or source.get("image_field") != "dgimg_independent":
+                    raise ValueError("the 2D pointing branch requires all three independent sensor sources")
 
         self.product_type = "fuv_detector"
         self.representation = "detector"
         self.schema_version = SCHEMA_VERSION
-        self.preprocessing_label = PREPROCESSING_LABEL
+        self.preprocessing_label = preprocessing_label
         self.time_tolerance_seconds = float(time_tolerance_seconds)
         self.time_match_rule = describe_time_match_rule(
             self.time_tolerance_seconds
@@ -470,7 +510,8 @@ class FUVDetector:
                 self.source_sha256[name] = ""
                 self.source_size_bytes[name] = -1
                 self.source_mtime_ns[name] = -1
-                self.image_fields[name] = IMAGE_FIELDS[name.upper()]
+                fields = BS2D_IMAGE_FIELDS if preprocessing_label == BS2D_PREPROCESSING_LABEL else IMAGE_FIELDS
+                self.image_fields[name] = fields[name.upper()]
                 self.unsubtracted_image_fields[name] = (
                     UNSUBTRACTED_IMAGE_FIELDS[name.upper()]
                 )
@@ -609,14 +650,15 @@ class FUVDetector:
     ):
         """Load native sensor files and construct an experimental Product 1."""
 
-        wic = load_detector_source(wic_file, "WIC")
+        label = configuration.get("preprocessing_label", PREPROCESSING_LABEL)
+        wic = load_detector_source(wic_file, "WIC", preprocessing_label=label)
         wic = add_modified_apex_coordinates(wic)
         si12 = (
-            load_detector_source(si12_file, "SI12")
+            load_detector_source(si12_file, "SI12", preprocessing_label=label)
             if si12_file is not None else None
         )
         si13 = (
-            load_detector_source(si13_file, "SI13")
+            load_detector_source(si13_file, "SI13", preprocessing_label=label)
             if si13_file is not None else None
         )
         return cls(wic, si12, si13, **configuration)
@@ -656,6 +698,12 @@ class FUVDetector:
             nc.time_match_rule = self.time_match_rule
             nc.source_time_decoding = SOURCE_TIME_DECODING
             nc.quality_weight_method = QUALITY_WEIGHT_METHOD
+            if self.preprocessing_label == BS2D_PREPROCESSING_LABEL:
+                nc.quality_weight_method = "fuvpy dgweight_independent on the native detector"
+                nc.background_fit_stage = "independent"
+                nc.dgsigma_freeze_iteration = 2
+                nc.pointing_correction_method = "clock_phase"
+                nc.pointing_reference_sensor = "WIC"
             nc.detector_noise_model = DETECTOR_NOISE_MODEL
             nc.coordinate_system = COORDINATE_SYSTEM
             nc.reference_height_km = REFERENCE_HEIGHT_KM
