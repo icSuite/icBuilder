@@ -65,7 +65,7 @@ def process_single_orbit(orbit, file_lists, inpath, outpath, sensors):
             images[sensor] = fuv.read_idl(
                 filenames, dzalim=75, reflat=(prefix == 'wic'),
                 measurement_variance=True, poisson_offset=0.5,
-                wic_variance_model='reference', viewing_geometry=True, pointing_metadata=True
+                wic_variance_model='reference', viewing_geometry=True, pointing_metadata=True, skip_unmapped=True
             )
 
         # Correct all sensors together, before selecting hemisphere or quality.

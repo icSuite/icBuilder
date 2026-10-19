@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 vault/.obsidian/
 example_data/dmsp/raw/
+figures/debugging/pointing_counter_time_20261019/

@@ -1,10 +1,663 @@
 # Current State
 
-Last reviewed: 2026-10-11 (Hardy electron implementation; prior checkpoints retained)
-Repository snapshot: `modular_pipeline` at `eecefeb`
-Worktree state: pre-existing modified example products, validation/debugging
-files, tests, and vault notes remain. Yearly DMSP spectrum integration, model
-helper, optional dependencies, tests, and documentation are uncommitted.
+Last reviewed: 2026-10-19 (native2D corpus metadata handling)
+Repository snapshot: `modular_pipeline` at `917a50a`
+Worktree state: pre-existing example products, validation/debugging files,
+literature, pyproject and project memory remain modified. The user removed
+the earlier alternative2D scripts; the tracked2D detector-script deletion is
+preserved. Current work adds only the requested native writer and replaces
+obsolete pipeline tests. Earlier checkpoint implementation claims below are
+historical where they conflict with this section.
+
+## Original-style2D native orbit writer
+
+The user explicitly reset the task: use `make_orbit_nc_files.py` as the base
+and make only the changes needed for shared metadata pointing and the2D
+temporal/independent backgrounds. `scripts/pipeline/make_orbit_nc_files_2d.py`
+now implements that scope, with the original1D script unchanged.
+
+Original arguments/defaults are retained: sensor switches, `--parallel`
+(default false), `--pool_size` (default10), `--base_input`/`--base` and
+`--base_output`. Outputs are directly beneath the chosen base in
+`wic/`, `s12/`, `s13/`, with the original `*_avail_orbit.npy` arrays and
+0=no data,1=success,-1=failure. No CSV/restart/hash/helper infrastructure is
+used. No detector/coregistration runner is added or restored.
+
+The necessary adjustment is one orbit worker loading all three full streams,
+correcting metadata jointly, then fitting enabled sensors separately. Sensor
+flags control fitting/output; all camera metadata remains required. Native
+calibration/variance settings are retained. Sigma freezes after temporal fit2,
+temporal convergence completes, and independent frames fit automatically.
+Both fit fields/coefficients/diagnostics are saved by FUVPY. Per-sensor skips
+and failures preserve the original continuation behavior, including allowing
+SI results when WIC has no usable northern data. Shared correction failure
+records -1 for the enabled sensors, without aborting the batch.
+
+51 focused tests pass (10 new runner tests plus Product1/precipitation
+regressions). Full raw orbit85 succeeds for WIC/SI12/SI13 with122/197/195
+accepted frames and original success-status arrays. All30 compared image,
+variance, geometry and fit fields per sensor exactly match the validated2D
+reference. A real spawn Pool.starmap check confirms two failed orbits are both
+recorded as-1 and the original batch/status writing completes normally.
+Ignored evidence: `figures/debugging/original_style_2d_20261019/checks.json`.
+Scratch real output: `/tmp/icbuilder_original_style_2d_20261019`.
+
+[[Processing Pipeline]] owns the command and output contract. Existing
+coregistration/precipitation still enforce their original1D contract;
+downstream2D field selection is separate work and was not changed here.
+
+Server follow-up exposes corpus coverage limits not exercised by the four
+local test orbits:365 fails the FUVPY strictly increasing SPIN guard;197 fails
+loader viewing-geometry validation because one frame has no common valid
+stored/reconstructed DZA pixels. The latter occurs inside read_idl, before
+shared correction, and the current original1D script also enables that check.
+Joint loading broadens its effect: one bad frame in any sensor marks all
+enabled sensors' orbit results-1 before any fit, although the batch continues.
+These exceptions do not establish that whole orbits have invalid pointing.
+No197/365 raw data is available locally. The read-only diagnostic
+`scripts/debugging/find_pointing_metadata_errors.py --base /disk/IMAGE_FUV`
+now scans197/365 and prints exact filenames, times/SPIN, both sides of
+counter/time breaks, and stored/reconstructed/common DZA pixel counts.
+Tested on real valid WIC/SI12/SI13 frames plus injected missing-geometry and
+repeated-spin records. The user has now supplied the server result: SI12/197
+`s1220002032117.idl` and `s1220002032119.idl` have zero valid stored and
+reconstructed DZA pixels. WIC/197 repeats counters in three groups; WIC and
+SI13/365 repeat54609 at12:25/12:27. At21:19:33 WIC/197 has22806 versus SI12
+22913,48ms apart (the SI12 frame is unmapped). The corrector's shared-SPIN
+lookup assumption therefore needs review, not just relaxing validation.
+[[IMAGE IDL Pointing Metadata]] owns exact files and implications. Proposed:
+frame-level missing-geometry handling, time-based camera association and
+counter-boundary segmentation. The user approved file exclusions, keeping
+repeated-counter frames and time association. These are now implemented:
+FUVPY read_idl adds skip_unmapped=False, enabled only by the2D writer here,
+to skip files with neither stored nor reconstructed DZA and report/record
+each filename. Other geometry errors remain strict. correct_pointing retains
+integer counters without strict increase and associates cameras by nearest
+precise WIC time, keeping the existing WIC counter/time segmentation.
+Unsupported short segments retain original pointing but can still fit
+backgrounds; segmentation does not divide the temporal background model.
+138 FUVPY tests and10 native-writer tests pass. A new complete raw85 native
+run writes122/197/195 frames with status1 for all sensors; all70 data fields
+per sensor exactly equal the prior output, including both background fits.
+Ignored evidence: figures/debugging/pointing_counter_time_20261019.
+Actual197/365 processing remains to verify on the server. Both fuvpy and
+icBuilder must be updated together before rerunning.
+Complete85/968 pointing comparisons against committed FUVPY additionally
+preserve every data variable in all six sensor/orbit streams, including both
+shared outlier repairs. FUVPY owns that regression report.
+
+## SI12/SI13 temporal and independent2D sigma2 trial complete
+
+All four test orbits (85,86,261,968) are complete for both SI12 and SI13:
+2082 source-frame comparison PNGs and1929 independent fits. All eight temporal
+fits and every independent fit converge. Both stages' fields and coefficients
+are saved. Output and sensor/orbit galleries:
+`figures/debugging/si_temporal_independent_x_sine_sigma2_20261019/`.
+
+The temporal model estimates sigma after fits1 and2, freezes the second
+per-pixel field, and continues to convergence. Each independent frame refits
+counts with fresh Tukey weights and the fixed second-estimate orbit sigma(B)
+relation. Same13-by4 x/sine tensor as WIC; native SI calibration/variance,
+original geometry, and existing quality selection. No WIC metadata/limb
+correction is transferred; the shared968 position outlier remains in SI.
+Ten focused numerical tests pass. All saved models reconstruct, sigma2 and
+Tukey formulas check, inputs/geometry match the native original products,
+and every PNG/gallery/manifest passes audit. Residual displays use±50 SI
+counts. [[Background Subtraction - Independent Frame Refinement]] owns details.
+
+User review: SI12/SI13 look good and change less than WIC. **Confirmed choice:**
+use the same2D temporal/independent sigma2 method for WIC, SI12 and SI13,
+continue temporal convergence and save both stages. The user subsequently
+authorized FUVPY implementation, now complete and verified: separate
+backgroundmodel_BS2D, configurable sigma freeze and automatic independent
+fields, with1D defaults bitwise preserved. Both methods can apply shared
+metadata-only pointing correction across all three sensors, recalculating
+native geographic/magnetic/background geometry.127 FUVPY tests pass; full85
+fit comparisons and full968 correction+fit checks pass all sensors.
+
+The current native-only integration is described above. The earlier
+alternative Product1 runner was withdrawn during the user's reset; the
+original downstream contract and field selection remain unchanged.
+Primary evidence and API design are in ../fuvpy/vault/02_Algorithm/2D Background
+and Shared Metadata Pointing.md; local FUVPY validation outputs are under
+../fuvpy/figures/validation/2d_shared_pointing_20261019. The WIC knot control is
+settled; [[IMAGE IDL Pointing Metadata]] owns earlier source/timing caveats.
+
+## Earlier temporal plus independent2D four-orbit comparison complete
+
+User asks to add independent2D correction to all four sigma-after-fit1 temporal
+orbits. New `plot_temporal_independent_x_sine_orbits.py` reuses the completed
+temporal fields unchanged and independently refits counts in each selected
+frame with the same x/sine tensor. Only orbit[a,b] sigma statistics are shared;
+fresh Tukey weights update each iteration, with no temporal shape prior or
+additional geometry correction. All four are complete:893 independent fits
+and1049 source-frame plots. Every fit converges. Eight tests pass and the existing single-frame solver
+is reproduced bitwise on repaired292. New four-panel galleries/data are under
+`figures/debugging/temporal_independent_x_sine_all_orbits_sigma1_20261018/`.
+[[Background Subtraction - Independent Frame Refinement]] owns damping,
+sigma semantics and provenance. No production or FUVPY API changes.
+Final audit verifies all893 model reconstructions and formulas, exact unchanged
+temporal variables/coordinates, all1049 PNGs and every manifest/gallery link.
+Root/per-orbit `artifact_checks.json` record the evidence. Next: user visual
+review of these four-panel galleries; no additional fit queued.
+
+Earlier, user reports possible auroral subtraction by both2D stages and asks about
+the original1D model comparison. Verified inventory: complete1D temporal plus
+independent gallery exists only for968 (`independent_background_20261017`,328
+plots/312 successful fits);85/86/261 have original temporal results but no
+complete1D independent fits. That older968 run uses coarser x knots and
+unrepaired geometry, so it is not a matched control for the latest2D batch.
+Original/1D includes the tapered signed sine asymmetry. No new fit launched.
+
+## Earlier temporal-only four-orbit comparison complete
+
+User requests the new2D temporal model on WIC85,86,261,968, with sigma frozen
+after fit1, every source frame plotted, and no independent fits. New
+`plot_temporal_x_sine_orbits.py` runs serially using the same x/sine surface
+and120-minute temporal target. Only the accepted968 frame292 metadata repair
+is retained. All four are complete:236/213/272/328 plots and6/7/3/4 solves.
+Total:1049 source plots,893 selected background frames. Saved old
+temporal results provide visual references; residual display stays±1500.
+Seven focused tests pass. Saved-data checks verify first-sigma frozen hashes,
+inputs, support, residual/weight formulas, monotonicity and reconstruction.
+All1049 PNGs, manifests and gallery links pass the final audit. Output:
+`figures/debugging/temporal_x_sine_all_orbits_sigma1_20261018/`.
+No production/FUVPY API changes. Detailed configuration, provenance and limits
+belong to [[Background Subtraction - Independent Frame Refinement]].
+Next: user visual review of the completed galleries; no additional fit queued.
+
+## Earlier independent frame background prototype tested
+
+User requests the same corrected2D x/temporal-sine-factor surface in both
+stages. `compare_temporal_independent_x_sine.py` fits all312 saved orbit968
+frames with the accepted292 geometry repair, then independently refits292
+using the new temporal model's second-estimate sigma relation. Both stages
+use13 x ×4 nonperiodic sine controls; the temporal model adds8 quadratic time
+controls at the existing120-minute target (common to the full surface).
+The former separate60-minute directional basis is replaced. Population/
+variance weights and normalized actual ridges remain controlled; no shape prior.
+Original independent2D fields reproduce bitwise. Temporal fit converges in5
+solves and independent292 in7. Six focused tests and artifact checks pass.
+
+New sigma at background1000 is about71 versus355 previously. Night negative
+residuals in292 decrease, but the final independent dayside edge pattern is
+essentially unchanged; the temporal fit itself leaves large positive edge
+residuals. This is a modest one-frame change, not an all-frame validation.
+No FUVPY or production default changed. Plot, paired frame data and full
+temporal fields/coefficients are under
+`figures/debugging/temporal_independent_x_sine_20261018/`.
+[[Background Subtraction - Independent Frame Refinement]] owns exact geometry,
+time-basis changes, freeze semantics, controls and interpretation limits.
+
+Saved292 weight check: the temporal dayside edge retains median Tukey0.886,
+with only2/2523 pixels rejected; its median residual is+553 versus+41 in the
+independent fit with the same spatial surface. Temporal coupling is therefore
+a plausible contributor to the broad bias; the comparison also changes ridge
+and sigma evaluation. Proposed, not adopted: retain temporal nightside and
+allow a small per-frame dayside adjustment. No new fit run. Full F(x,q,t)
+replaces the old baseline and asymmetric term; no extra term or Spencer taper.
+
+User corrects the intended second axis to the same `solar_view_sine_factor`
+used by the temporal model, explicitly choosing it over normalized sin(azimuth).
+The prior raw-angle trial was an assistant misunderstanding. New
+`compare_independent_x_sine_spline.py` fits F(x,q) with a nonperiodic cubic
+second axis[-1,1],4 controls, and the same13 x controls/52 coefficients.
+Sigma remains the temporal fit's fixed second-estimate relation; inputs,
+support, x population/variance weights, initialization, Tukey cutoff and
+normalized ridge remain fixed. Original baseline fields reproduce bitwise;
+corrected fit converges in5 iterations. Artifact checks and four focused
+tests pass. No FUVPY spatial API or production default change.
+
+The lower-right blue edge band is reduced, without the raw-angle nadir feature.
+The stored factor vanishes at nadir, giving a unique limit. Overall change
+remains modest and real auroral preservation is not established. Correct plot:
+`figures/debugging/independent_x_sine_spline_20261018/comparison.png`. Detailed
+coordinate definition, model controls and evidence are owned by
+[[Background Subtraction - Independent Frame Refinement]]. No other frame
+or control configuration was tried.
+
+Earlier, the assistant misinterprets this as x and raw viewing azimuth.
+`compare_independent_x_azimuth_spline.py` tests one periodic cubic tensor on
+repaired292, sharing the temporal fit's fixed second-estimate sigma relation.
+The total surface replaces baseline+signed correction, retains13 x controls,
+adds4 periodic angular controls and constrains each angular x sequence to be
+monotonic. Counts/geometry/support, x-only population and variance weights,
+Tukey settings and initialization stay fixed. Constant-mode ridge penalty
+is normalized to the1D baseline. Original fields reproduce bitwise; tensor
+converges in6 iterations; reconstruction/constraint/artifact checks and two
+focused numerical tests pass. No FUVPY spatial API or production change.
+
+That incorrect-coordinate trial reduces the blue edge band but subtracts more
+in bright auroral regions and has a directional feature around nadir. Raw
+azimuth has no unique nadir limit; fitted angular variation near that x is
+substantial. These limitations do not describe the corrected sine-factor
+coordinate above. No additional parameter
+sweep or frame batch. Plot and paired data:
+`figures/debugging/independent_x_azimuth_spline_20261018/`. Exact model changes,
+including stronger monotonicity and night angular freedom, are owned by
+[[Background Subtraction - Independent Frame Refinement]].
+
+User judges the quiet-patch trial visually modest and confirms reestimating
+sigma after fit2, then freezing sigma while Tukey weights keep updating.
+FUVPY's opt-in `dgsigma_freeze_iteration=2` does this, preserving default1.
+75 background tests pass. `compare_second_fit_sigma.py` recalibrates on all312
+saved orbit968 frames and compares repaired292 with unchanged denser knots,
+inputs/support, variance/population weights and ridge. First sigma and original
+frame baseline reproduce exactly; the second sigma field freezes as intended.
+Sigma at background1000 falls665→355. The visual effect is modest, in the
+same direction but smaller than the manual quiet trial; artifacts remain.
+Output: `figures/debugging/second_fit_sigma_20261018/`. No pipeline defaults
+changed and no further frame batch was run.
+
+Earlier alternative, still not implemented: separate
+cos(SZA) and cos(DZA) in a coarse surface, adding limited sine/cosine azimuth
+terms through existing horizontal dot/cross factors. Pure x/azimuth retains
+the SZA/DZA degeneracy. Current model has only a restricted sine-like azimuth
+term. [[Background Subtraction - Independent Frame Refinement]] owns exact
+sigma semantics, evidence, controls and the proposed spatial design.
+
+User authorizes one controlled quiet-patch nightside-sigma fit on repaired292.
+Three visually quiet rectangles estimate patch-centered MAD scatter41 counts;
+the stored quiet detector-noise median89 is used as a conservative floor.
+Only Tukey sigma at SZA>100 changes from the empirical law to this fixed
+night scale. Denser knots, full support, population/variance weights, geometry,
+initialization and ridge remain fixed; no plateau or fit mask. All four
+baseline fields reproduce bitwise exactly; both fits converge and artifact
+checks pass. Central quiet offsets shrink and faint aurora receives less
+fitting weight. Quiet pixels recover after early rejection. Outer quiet
+offset becomes positive and the blue edge artifact remains. This supports
+rejection-scale sensitivity, not a complete or automatically transferable fix.
+No FUVPY or production change. An automatic scale estimator and cross-frame
+validation remain unimplemented. Selection and comparison are under
+`figures/debugging/quiet_nightside_sigma_20261018/`; exact evidence and limits
+are owned by [[Background Subtraction - Independent Frame Refinement]].
+
+Earlier, user confirms the150-degree endpoint trial did not work; do not
+select it or continue endpoint tuning.
+
+User dislikes the forced110–120 plateau transition and suggests a free final
+knot at150 with constant continuation. `compare_nightside_endpoint.py` tests
+this on repaired292, explicitly interpreting150 as nadir-equivalent like the
+other knots. It replaces the night boundary-3.5 with cos(150), clamps base x
+at that boundary, and retains other knots and the same13 amplitudes. No taper
+or imposed endpoint slope. Counts/geometry/support, original x population
+weights, variance, sigma and ridge scalar remain fixed. Baseline fields
+reproduce bitwise exactly; both fits converge and artifact checks pass.
+
+The fitted endpoint is719 counts. The curve still drops before flattening,
+and blue residual artifacts remain; this alone does not solve292. Oblique
+views reach the nadir-equivalent boundary at smaller actual SZA. No pixel in
+292 reaches actual SZA150, so it cannot validate a purely actual-SZA150 cap.
+Plot: `figures/debugging/nightside_endpoint_20261018/comparison.png`. Earlier
+110–120 blend results are preserved. No FUVPY or production change; the
+subsequent sigma test is above. [[Background Subtraction - Independent Frame Refinement]]
+owns exact settings, evidence and limits.
+
+User revises base knots to nadir-equivalent SZA70/80/85/90/95/100/110/120 and
+defers sigma. `scripts/debugging/compare_base_knots.py` compares this set on
+repaired292 with the existing base, retaining outer coverage and directional
+knots. Counts/geometry/support/sigma/Tukey and actual ridge scalar are fixed;
+the dimensionless damping value is compensated for basis-dependent normalization.
+Both monotonic fits converge; old baseline reproduces exactly. The new base
+allows a flatter night transition and steeper near-terminator rise. Night
+negative residual tail is smaller, but visible oversubtraction remains; this
+is one frame, not a general quality verdict. Plot:
+`figures/debugging/base_knots_20261018/comparison.png`. Exact settings and
+controls are owned by the algorithm note. No production default changed.
+
+Read-only follow-up: repaired292 empirical rejection sigma is about664 counts
+in darker negative-residual night pixels, while their detector-noise estimate
+is about90. This suggests revisiting the nightside robust scale, separately
+from least-squares variance weights. Its knot proposal is superseded by the
+comparisons above. The subsequent controlled sigma test is recorded above;
+detector-noise estimates are not ground truth.
+
+Latest focused check: a persistent positive-only nightside mask on repaired
+frame292 does not fix oversubtraction. The user explicitly wants fewer
+variants; only this frame's selection and one masked fit were inspected.
+`scripts/debugging/check_persistent_nightside_mask.py` masks SZA>100 positive
+excess above the existing5*sigma cutoff, then fits independently with fresh
+Tukey updates elsewhere. No shape prior or FUVPY source change. Selection
+retains all occupied night x bins but includes fainter aurora. Crucially,
+97.8% of excluded pixels already have zero weight in the ordinary fit; this
+adds little new auroral rejection. Bright-core re-entry is not supported as
+the leading cause. Retained diffuse aurora versus model limitations remains
+unresolved; do not expand this failed variant into a batch or threshold sweep.
+Plots: `figures/debugging/persistent_nightside_mask_20261018/selection.png`
+and `comparison.png`. [[Background Subtraction - Independent Frame Refinement]]
+owns the method, evidence and direct artifact checks.
+
+User direction: reject the orbit-background shape prior; they find the
+metadata position repair effective and identify aurora-dominated nightside
+oversubtraction as the independent-fit problem. Keep the 1D model change
+deferred. Their suggestion to use orbit Tukey weights for the first solve,
+then recompute, is implemented and tested: fourteen preview frames with
+repaired292 geometry, comparing all-ones, saved-orbit and recomputed-reference
+initial weights. All42 fits converge; 67 focused FUVPY tests pass. Independent
+product/input/formula/damping and plot/source checks pass.
+Gallery: `figures/debugging/independent_initial_weights_20261018/index.html`.
+Starting weights improve the first solve but barely change real final fits;
+they do not fix the nightside oversubtraction. Initial zeros do recover weight.
+No shape penalty or persistent old-weight mask is used; sigma, support and
+numerical damping match across the independent methods. Next is diagnosing
+auroral rejection during updates, rather than claiming initialization solves
+the problem. [[Background Subtraction - Independent Frame Refinement]] owns
+details, first/final292 evidence and remaining options. No production choice.
+
+Earlier: the user authorized an orbit-shape constraint for close-up frames with
+little quiet support. New `scripts/debugging/compare_background_prior.py`
+compares the frozen orbit fit, free independent fits and fixed strengths
+0.1/1/10 on fourteen 0968 frames, including 288–296. A separate six-panel
+frame292 comparison applies only its frozen position repair, evaluating the
+same fitted orbit function at changed geometry and using paired support.
+All 60 independent solves converge; 59 focused dependency tests pass. The
+complete first-stage fit was reproduced exactly to retain spatial amplitudes.
+Gallery: `figures/debugging/background_prior_20261018/index.html`.
+The saved independent product audit passes input/reference/support, residual,
+main sigma/Tukey and plot/source checks; position weights are not exported.
+The constraint controls free-fit departures, while very strong shrinkage
+restores old artifacts. The position repair visibly reduces frame292's
+dayside band. No uniform cure, calibrated prior strength or auroral-preservation
+claim follows. These are conditional independent fits, with no adjacent-frame
+penalty. Production defaults and the deferred 1D model remain unchanged.
+
+Earlier `scripts/debugging/compare_independent_background.py` shares only the
+orbit sigma-law coefficients a,b with independent spatial fits, retaining
+original metadata and fresh Tukey/population weights. Its eight-frame preview
+remains at `figures/debugging/independent_background_20261017/index.html`.
+The user reports several improvements but identifies frame292 as a failure.
+Sigma estimates pooled squared residuals; geometry-bin populations balance
+sampling while individual brightness values remain fit rows. Neither supplies
+missing quiet information in predominantly auroral views. An extra shape
+prior was tried for that limitation, then rejected by the user.
+[[Background Subtraction - Independent Frame Refinement]] owns both experiments,
+the position test, runnable commands, validation and remaining limits. The
+user prefers launching long exports themselves. Full-sequence temporal behavior
+and observed auroral preservation remain unvalidated.
+
+## Metadata-only background comparison complete
+
+The user's quick full-sequence review finds little limb-correction benefit
+in 0085/0086 and a large visual difference in 0261/0968. They are concerned
+that independent SI12/SI13 limb fitting is impractical, especially for SI12.
+They request the same WIC four-orbit comparison using metadata alone and
+explicitly want the command so they can run the long batch themselves.
+
+The user ran `scripts/debugging/compare_metadata_background.py`. Default
+`clock_phase` reuses frozen timing-aware phase smoothing plus isolated
+position-outlier repair; no limb measurement or residual selects a correction.
+Located complete output in
+`figures/debugging/metadata_background_all_orbits_20261016/`: all four orbit
+galleries, 1,049 valid source-matched PNGs and 893 paired background frames.
+All eight fits converge with monotonic solver flag1. Completion audit verifies
+frame inventories, PNG integrity, NetCDF dimensions and frozen state hashes.
+[[IMAGE Pointing - Metadata Background Comparison]] owns the command,
+verification, temporal limits and SI-transfer caveat. The subsequent 0968
+review and proposed independent-frame direction are recorded above. No scientific improvement verdict or production
+correction is adopted from completion checks alone.
+
+## Full four-orbit limb visual comparison complete
+
+The initial 0085 example showed removal of a specific terminator artifact.
+The later full-sequence assessment is recorded above. The blanket conclusion that
+"0085 is worse" is superseded: its aggregate quiet-region RMS increased,
+which does not assess the same feature as visual artifact removal.
+
+User authorized the full WIC comparison for 0085/0086/0261/0968 and an
+old/new plot for every source frame. The isolated full-orbit run is complete
+in `figures/debugging/limb_background_all_orbits_20261016/`: 236/213/272/328
+plots respectively, totalling 1,049. All 893 standard north/science frames
+have paired backgrounds; 156 excluded frames have explicitly labelled
+unavailable-background panels. No source is omitted from plotting. All eight
+background fits converge with monotonic solver flag1.
+The full-orbit exploratory candidate uses leave-self-out local mean bright
+limb references because one fixed reference cannot cover changing limb views.
+Dayside gates, 0.4° weak-direction coupling and background settings are fixed
+before residual inspection. Unsupported/bound-hit/position-outlier frames
+retain original geometry: 602 frames accept rotations and 291 background
+frames retain their original coordinates. Production data remain unchanged.
+All plots use the same old/new ±1500-count scale. Frozen hashes, source
+coverage, numerical reconstruction and independent product checks pass.
+[[IMAGE Pointing - Full Orbit Visual Review]] owns methods, actual coverage,
+limitations, galleries and verification. The user's subsequent review and
+metadata-only next test are recorded above.
+
+## Earlier short-window background comparison
+
+User authorized background subtraction after the temporal trial. The frozen
+gentle `joint_0.400` rotations were tested in complete north/science-selected
+WIC orbit contexts, with identical production background settings and paired
+pixel support. Counts, variance, quality and temporal knots are identical;
+SZA/DZA and both solar-view factors are regenerated consistently. Only the
+original 11-frame correction windows change geometry.
+
+0086's aggregate quiet-region residuals improve. In 0085, aggregate RMS
+increases while the user observes removal of the specific terminator artifact.
+On nine interior frames, quiet-terminator residual RMS improves 11.7% and
+adjacent-frame variation improves 22.4% in 0086. In 0085, RMS worsens 21.9%
+and the negative tail strengthens despite almost unchanged temporal variation.
+Aggregate RMS alone is insufficient to judge structured artifact improvement.
+No general correction is adopted; production geometry remains unchanged.
+
+All four fits converge with the monotonic solver. Independent review verifies
+common masks, saved metrics, frozen rotations, coordinate/directional-factor
+parity, and unchanged source/count/variance hashes.
+[[IMAGE Pointing - Background Trial Results]] owns methods, artifacts, correction-window boundaries,
+full-context refit spillover and limitations. Next: constrain full-disk
+rotation/reference-profile ambiguity without tuning pointing to subtraction
+residuals. Background testing is now authorized and this comparison is complete.
+
+## Temporal bright-limb trial completed
+
+User requested execution of the temporal-stability test. New standalone
+`check_limb_pointing_time.py` compares independent and jointly constrained
+bright-limb fits for 11 consecutive WIC frames each in 0085 (154–164) and
+0086 (193–203), about 20 minutes per orbit. One fixed reference and fixed
+bright-day/held-out/guard blocks avoid chained drift and changing validation
+regions. Only the weakly measured camera direction is coupled in time;
+the better measured direction can make rapid limb-supported corrections.
+
+In 0086, illustrative gentle coupling reduces weak-step RMS 0.256→0.123°
+per cadence, while held-out spatial RMS is 0.331→0.314 px and temporal
+mismatch-change RMS is 0.342→0.357 px (original 1.790/2.038 px). Stronger
+coupling nearly eliminates weak-angle jumps but worsens temporal agreement
+to 0.670 px. The 198→199 strong correction remains. All prescribed scales
+and reversed validation blocks are reported; no production scale is chosen.
+
+0085 also improves on supported data, but three of ten intervals have no
+common held-out angular support; frames 156/157 are poorly constrained.
+The result supports bounded relative stabilization, not a guarantee against
+jumps or full-disk pointing accuracy. [[IMAGE Pointing - Temporal Limb Trial]]
+owns support, scores, plots, synthetic step/noise checks and reproduction.
+Independent review, matched uncoupled fits, all 22 baseline fields, source
+hashes and bound checks pass. Inspection SZA/DZA for the gentle candidate
+are saved separately. Background subtraction and production data remain
+unchanged at that checkpoint. Broader temporal/full-disk validation is needed
+before adoption. The subsequent background comparison is complete above,
+with mixed outcomes.
+
+## Bright-dayside relative limb fit completed
+
+The user authorized a gradient-guided trial restricted to the brightest
+usable dayside arc and explicitly deferred background subtraction. A new
+standalone diagnostic fits two small camera rotations of the later frame,
+keeping the earlier frame and its UV-edge/shell offset as the reference.
+SZA≤65°, brightness/gradient gates and complete normal profiles exclude the
+faint nightside/terminator region. Contiguous held-out blocks have 8–10-pixel
+separation from training samples.
+
+Held-out relative normal RMS falls 3.916→0.367 px in original WIC 0086
+frames 198→199, versus 0.526→0.154 in 0085 frames 159→160. SZA/DZA and
+GCI intersections were recalculated into isolated inspection NPZs. Raw images,
+production geometry, metadata-only candidates and backgrounds are unchanged.
+Baseline parity, synthetic forward-image rotation, source hashes and an
+independent geometric review pass. [[IMAGE Pointing - Bright Limb Fit]] owns
+rules, artifacts, numerical verification and limitations.
+
+The narrow arc leaves two correlated rotation components: alternate arc
+splits change the fitted rotation by 0.048°/0.103° in 0085/0086, and even
+0085's small local mismatch produces degree-scale whole-disk SZA/DZA changes.
+This demonstrates promising relative bright-edge alignment, especially for
+0086; it does not establish absolute attitude, full-disk coordinates or
+background improvement. The neighbouring-frame temporal test is now complete
+above; broader temporal and full-disk validation remain. No production
+correction is selected; the subsequently authorized background comparison
+is complete above.
+
+## Metadata-only pointing trial completed with limb validation
+
+All 1,049 original WIC frames in 0085/0086/0261/0968 were processed with
+frozen metadata-only rules; all unchanged-state SZA/DZA reconstructions pass.
+658/1,045 adjacent pairs support the common-row geometric-limb comparison.
+The isolated 0968 frame-292 position repair reduces entering-frame limb-motion
+disagreement from 9.37 to 0.03 pixels, and leaving-frame disagreement from
+8.82 to 0.48. Two additional position anomalies are flagged in 0085/0086,
+but are not equally well validated by the limb.
+
+Timing-aware phase filtering preserves exposure-timing-driven changes. Its
+median limb-motion disagreement improves 1.71→1.14 px in 0086, barely changes
+1.18→1.18 in 0085, and worsens 0.87→1.41 in 0261 and 1.27→1.49 in 0968.
+Naive principal-phase smoothing is much worse. The original 0086 problematic
+transition remains at about 5.7 pixels. No general filter is adopted.
+
+Follow-up requested by the user: validate the bright bottom crescent per
+column. All 449 original 0085/0086 frames now have a second validation
+direction, with metadata candidates unchanged. Lower-edge gradient metrics
+do not improve consistently with phase filtering (0085 0.963→1.036 px;
+0086 0.722→0.925 px on common supported pairs). The original 0085 pair
+agrees fairly closely, while the original 0086 pair still shows a roughly
+four-pixel vertical disagreement in the bright arc. Vertical column metrics
+and earlier horizontal row metrics measure different projections and support.
+Isolated-outlier repair remains the only clear validated success; no general
+background-subtraction improvement has been demonstrated.
+
+New orientation-independent diagnostic follows the geometric limb's local
+normal, handling rows, columns and diagonal segments continuously. In the
+bright diagonal arc, the original 0086 pair's edge offset changes −1.42→−5.86
+px, versus nearly constant −4.46→−4.52 in 0085. No pointing was fitted or
+changed. The user is now exploring gradient-based correction potential;
+failure of metadata smoothing does not imply this discrepancy is uncorrectable.
+A bright-dayside physical-adjustment trial is now complete above, beyond
+metadata-only smoothing. Background improvement remains untested.
+[[IMAGE Pointing - Metadata Trial Results]] owns methods, exclusions, plots
+and verification for the metadata-only trial. Images assessed those fixed
+candidates; none determined their corrections. The new limb trial above is
+explicitly image-informed. Raw images, production geometry and backgrounds
+are unchanged.
+The 0968 position-only subtraction comparison also remains available, with
+complete viewing geometry regenerated consistently. Upstream ephemeris/time
+association remains unresolved; no production correction is adopted.
+
+## Pointing reconstruction is feasible; target background subtraction
+
+The user clarified that the purpose is to improve rapid background changes
+and terminator artifacts with coarse temporal knots. A new standalone WIC
+reconstruction reproduces saved SZA/DZA in nine frames from 0085/0086/0261/0968
+to <0.00003 degrees on background-eligible pixels. This confirms we can
+recalculate fields from saved state; it does not improve pointing yet.
+
+The live model's 120/60-minute temporal splines constrain coefficients, while
+SZA/DZA and directional factors are evaluated per frame. Correct geometry
+can therefore follow real image jumps without fast coefficient changes.
+Smoothing must remove erroneous geometry motion while retaining observed
+motion. [[IMAGE Pointing - Background Stabilization]] owns the verified
+reconstruction, detector conventions and proposed controlled comparison.
+The user confirmed metadata as the first approach and initially expressed
+concern about image-derived corrections. The completed first experiment used
+metadata only, with filter rules independent of subtraction residuals. The
+subsequently authorized bright-limb trial is separate and does not use
+background residuals. Temporal smoothness and partial-limb agreement cannot
+by themselves establish attitude accuracy. No production correction is adopted.
+
+## Full local controls confirm image/geometry mismatches
+
+All 600 original WIC frames in 0261/0968 were checked, outside the recovered
+warning intervals. Of 598 adjacent pairs, 369 have clear, consistent limb
+support for the fixed-row diagnostic; 80 differ from local DZA motion by
+more than two pixels. Supported maxima are 4.80/4.66 px in 0261/0968.
+Separate inspection finds a roughly nine-pixel excursion around 0968
+frame 292 (2001-10-21 23:57:58.988 UTC), coincident with a saved `O_GCI`
+position 434.29 km from time-weighted neighbour interpolation despite normal
+cadence and consecutive spins. Some other mismatches have smooth positions.
+
+The earlier three-frame 0968 control agrees locally but is not representative
+of the longer sequence. Diagnostic support is not a production quality mask
+or corpus accuracy fraction. [[IMAGE Pointing - Full Local Controls]] owns
+methods, caveats, plots, verification and exact file identities. Producer
+time/ephemeris/attitude associations remain an upstream uncertainty alongside
+the controlled background experiment above. Absolute attitude error and background-failure
+causality remain unestablished. No source data or processing defaults changed.
+
+## Larger local IDL inventory
+
+The repository sample is not the complete local raw-data inventory. Verified
+`/home/bing/Dropbox/work/temp_storage/icBuilder_pipeline_test` contains original
+IDLs for 0085/0086/0261/0968: respectively 236/213/272/328 WIC files, with
+SI12/SI13 also present and every HDF-indexed source file available. 0261 and
+the longer 0968 sequence are outside the identified warning intervals. Earlier
+pointing/image checks used only the small repository sample. The larger WIC
+controls are now checked above. [[IMAGE IDL Pointing Metadata]] owns the exact
+sensor inventory.
+
+## Earlier short outside-warning control
+
+WIC orbit 0968 (2001-10-21) is outside the recovered warning intervals. Both
+adjacent pairs in its three repository-example frames have image/coordinate comparisons.
+Dayglow-limb image column shifts -6.78/-6.19 pixels agree with joint SZA/DZA
+shifts -6.56/-6.24 to about 0.22/0.05 pixels. Independent limb and contour checks
+confirm there is no approximately 5-pixel discrepancy like 0086 in this short
+control. Only four minutes are covered; absolute pointing and corpus accuracy
+remain unvalidated. The diagnostic accepts pair/region selection, and earlier
+default results are unchanged. [[IMAGE IDL Pointing Metadata]] owns evidence,
+plots and the reason for using the dayglow limb rather than evolving aurora.
+
+## Pointing origin and known warning interval
+
+Recovered FUVVIEW3 derives pointing from UDF attitude/spin-phase information,
+camera-alignment tables and orbit geometry before exporting pixel coordinates
+and SZA/DZA. Its GUI explicitly warns that pointing is unreliable for 2000
+days < 157; both local orbits 0085/0086 are day 137 and would be flagged. All three
+saved camera-alignment triples match the nearest day 145 calibration entries.
+Frey (2004) §7 independently describes UV-star corrections with residual multi-pixel
+pointing errors. Exact producer revision/inputs/manual corrections remain
+unverified. [[IMAGE IDL Pointing Metadata]] owns source references and limits.
+The full local WIC controls above now establish that mismatches also occur
+outside these warning intervals; no correction or policy change.
+
+## IMAGE IDL pointing metadata and example changes verified
+
+Nine local WIC/SI12/SI13 frames contain spacecraft position, spin-axis and
+spin-phase information, camera alignment angles, central GCI look/RA/DEC,
+FOV/angular increments, per-pixel coordinates and SZA/DZA, and emission height.
+Recovered FUVVIEW3 source establishes field meanings and rotations. SI saves
+128-by-128 arrays while retaining 256-format pointing metadata; reconstruction
+must reproduce that resampling. fuvpy does not retain most raw attitude fields.
+[[IMAGE IDL Pointing Metadata]] owns evidence and limits. The user-requested
+check of all 129 local source frames finds irregular look changes in 0085/0086,
+with WIC maxima 1.281/0.965 degrees; SI maxima reach 1.345 degrees. No cadence
+gaps explain these steps. Constant camera alignment and spin-axis steps below
+0.046 degrees leave stored spin-phase increments as the dominant term. The
+0968 excerpt has only three frames and similar approximately 0.9-degree steps.
+New `scripts/debugging/check_example_pointing.py` writes reviewed plots and
+per-frame/summary CSVs. Follow-up image plots show leftward movement of the
+original WIC Earth image across both peak pairs. New
+`scripts/debugging/plot_example_pointing_frames.py` provides four-frame strips,
+full animations and peak-pair blinks for all three sensors in 0085/0086,
+showing original IDL, stored BS and stored SH images on fixed detector axes
+and colour scales. Physical pointing versus timing/phase-estimation behavior
+and causality for background failures remain unresolved. No processing
+defaults, production code or scientific policy changed.
+
+Follow-up SZA/DZA check: original angle grids shift with the scene but a
+local translation comparison finds relative-motion differences. WIC 0086
+frames 15→16 move about 6.35 pixels left in the image versus 11.52 pixels
+for SZA/DZA; 0085 frames 6→7 give 14.80 versus 16.13 pixels. Independent
+limb/contour checks confirm the pattern, especially the approximately 5-pixel
+0086 difference. Original IDL and finite stored angle values agree. New
+`scripts/debugging/check_pointing_coordinate_motion.py` saves overlays and
+CSV evidence. This is a candidate registration issue, not established absolute
+pointing error or a proven cause of subtraction failures. Broader comparisons
+and producer phase/timing provenance checks precede any correction.
 
 ## Hardy electron option implemented
 

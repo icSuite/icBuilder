@@ -1,6 +1,6 @@
 # Processing Pipeline
 
-Last reviewed: 2026-09-20
+Last reviewed: 2026-10-19
 
 > [!NOTE]
 > This note describes the live bin-first production path and the implemented
@@ -27,6 +27,60 @@ every WIC frame, matches SI12 and SI13 independently within two seconds, maps
 SI footprints onto WIC pixels, copies WIC detector variance, and propagates SI
 variance with squared overlap weights. It writes beneath
 `fuv_detector/fuvpy_bs_directional_v1` using atomic partial-file publication.
+
+The separate `scripts/pipeline/make_orbit_nc_files_2d.py` is a small adaptation
+of the original `make_orbit_nc_files.py`, as explicitly requested by the user.
+It keeps the original CLI (`--do_wic`, `--do_s12`, `--do_s13`, `--parallel`,
+`--pool_size`, `--base_input`/`--base`, `--base_output`), defaults,
+`Pool.starmap` execution, native output layout and availability arrays.
+
+Its necessary structural change is one worker per orbit across sensors:
+load WIC, SI12 and SI13 with precise pointing metadata, apply one common
+`correct_pointing(..., method='clock_phase')`, then independently fit and save
+each enabled sensor. Complete metadata streams are corrected before north or
+quality selection. Sensor switches control fitting/output; metadata from all
+three cameras is always needed for shared pointing. Missing metadata or a
+shared correction failure records -1 for the selected sensors.
+
+Loader calibration/variance settings match the original: DZA limit75 degrees,
+WIC reflattening only, measurement variance enabled with Poisson offset0.5
+and the WIC reference noise model. `backgroundmodel_BS2D` estimates sigma
+after fits1/2, freezes the second field through temporal convergence, and
+automatically fits independent frames using that orbit sigma law. Both
+`dg*` temporal and `dg*_independent` fields, coefficients, convergence and
+corrected pointing evidence are serialized; temporal fields are not replaced.
+
+The2D writer additionally opts into `read_idl(..., skip_unmapped=True)`:
+files with no valid stored or reconstructed DZA pixels are individually
+excluded, warned by filename and recorded in `skipped_unmapped_files`.
+Other geometry validation errors still fail. Repeated integer SPIN values
+retain their frames. FUVPY associates each camera with WIC by precise time;
+its existing WIC counter/time breaks separate smoothing segments. Segments
+shorter than the eleven-frame window retain original pointing and remain
+eligible for background fitting. No correction extrapolates across boundaries.
+
+Outputs use the original locations directly beneath `--base_output`:
+`wic/wic_orNNNN.nc`, `s12/s12_orNNNN.nc`, `s13/s13_orNNNN.nc`, and
+`wic_avail_orbit.npy`, `s12_avail_orbit.npy`, `s13_avail_orbit.npy`.
+Availability remains (orbit,status), with0=no data,1=success,-1=failure.
+No-data or a fit failure in one sensor does not stop the other sensors or
+orbits. No-data also includes no north frame passing frame_quality>=2.
+This preserves the original continuation/error-reporting policy.
+
+Example, using a separate output base:
+
+```bash
+python scripts/pipeline/make_orbit_nc_files_2d.py \
+  --base_input /path/to/raw_data --base_output /path/to/2d_products \
+  --parallel true --pool_size 5
+```
+
+The original1D script remains unchanged. The earlier alternative2D runner
+layout, CLI, restart hashes, CSV reports and combined/coregistration runner
+were withdrawn during the user's reset. This native writer does not use that
+infrastructure. Downstream coregistration/precipitation still enforce the
+original1D preprocessing contract; accepting2D native files and explicitly
+selecting independent counts/weights is separate work.
 
 `scripts/pipeline/make_precipitation_detector_orbit_files.py` then consumes
 that schema directly. The implemented image-ratio parity branch uses the

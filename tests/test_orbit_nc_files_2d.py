@@ -35,6 +35,7 @@ def setup_orbit(tmp_path, monkeypatch):
     def read(filenames, **settings):
         prefix = Path(filenames[0]).name.split('_')[0]
         assert settings['dzalim'] == 75 and settings['pointing_metadata']
+        assert settings['skip_unmapped']
         assert settings['measurement_variance'] and settings['poisson_offset'] == .5
         assert settings['reflat'] == (prefix == 'wic')
         assert Path(filenames[0]) == raw/(prefix+'_data')/file_lists[prefix][0]
