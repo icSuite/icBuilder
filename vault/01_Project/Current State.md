@@ -1,13 +1,34 @@
 # Current State
 
-Last reviewed: 2026-10-19 (native2D corpus metadata handling)
-Repository snapshot: `modular_pipeline` at `917a50a`
+Last reviewed: 2026-10-19 (Product1 independent2D ingestion)
+Repository snapshot: `modular_pipeline` at `981cce3`, Product1 update uncommitted
 Worktree state: pre-existing example products, validation/debugging files,
 literature, pyproject and project memory remain modified. The user removed
 the earlier alternative2D scripts; the tracked2D detector-script deletion is
-preserved. Current work adds only the requested native writer and replaces
-obsolete pipeline tests. Earlier checkpoint implementation claims below are
+preserved. Current work updates the existing Product1 script and validation
+to consume independent2D fields. Earlier checkpoint implementation claims below are
 historical where they conflict with this section.
+
+## Product1 now defaults to the independent2D solution
+
+User approved the design and implementation. The existing
+scripts/pipeline/make_fuv_detector_orbit_files.py now defaults to
+fuvpy_bs2d_sigma2_pointing_v1 and reads dgimg_independent/dgweight_independent
+for all supplied sensors. It uses the saved corrected geometry and existing
+img_variance propagation. The original1D route remains selectable through
+--preprocessing-label fuvpy_bs_directional_v1. Existing schema2, time/footprint
+mapping, WIC-led support and optional/missing SI behavior are preserved.
+Restart/publication checks validate the selected fields and independent-stage
+metadata. [[Processing Pipeline]] owns paths and commands.
+
+57 focused Product1/coregistration/legacy-precipitation tests pass. Complete85
+builds122x256x256 in31s and reads through icReader. WIC independent fields and
+corrected geometry match all frames at storage precision; SI12/SI13 counts,
+weights and squared-overlap variances match fresh mapping checks at0/61/121.
+A second CLI run reports1 complete,0 pending. Scratch output/evidence:
+/tmp/icbuilder_product1_independent_20261019 (verification.json).
+Product2 currently still accepts only the original preprocessing label;
+consuming this new Product1 configuration is the next integration boundary.
 
 ## Original-style2D native orbit writer
 
@@ -42,9 +63,9 @@ recorded as-1 and the original batch/status writing completes normally.
 Ignored evidence: `figures/debugging/original_style_2d_20261019/checks.json`.
 Scratch real output: `/tmp/icbuilder_original_style_2d_20261019`.
 
-[[Processing Pipeline]] owns the command and output contract. Existing
-coregistration/precipitation still enforce their original1D contract;
-downstream2D field selection is separate work and was not changed here.
+[[Processing Pipeline]] owns the command and output contract. Product1 now
+consumes independent2D as described above; Product2 still enforces the
+original preprocessing label.
 
 Server follow-up exposes corpus coverage limits not exercised by the four
 local test orbits:365 fails the FUVPY strictly increasing SPIN guard;197 fails

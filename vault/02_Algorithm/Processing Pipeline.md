@@ -25,8 +25,30 @@ The new-fuvpy sensor orbits feed
 `scripts/pipeline/make_fuv_detector_orbit_files.py`. Schema-2 Product 1 keeps
 every WIC frame, matches SI12 and SI13 independently within two seconds, maps
 SI footprints onto WIC pixels, copies WIC detector variance, and propagates SI
-variance with squared overlap weights. It writes beneath
-`fuv_detector/fuvpy_bs_directional_v1` using atomic partial-file publication.
+variance with squared overlap weights. Its default preprocessing label is
+`fuvpy_bs2d_sigma2_pointing_v1`: each supplied sensor contributes
+`dgimg_independent` counts and `dgweight_independent` quality weights, with
+saved corrected geographic/SZA/DZA fields and original `img_variance`.
+The supporting source validation requires both converged fits, sigma freeze2
+and shared WIC clock_phase correction. Optional SI files and unmatched frames
+retain the existing missing-channel representation.
+
+Output remains schema2 beneath
+`fuv_detector/fuvpy_bs2d_sigma2_pointing_v1/or_NNNN.nc`, using the existing
+atomic publication and restart checks. Checks select the correct source
+field names and verify independent-stage/sigma/pointing provenance. The
+original1D route remains available through
+`--preprocessing-label fuvpy_bs_directional_v1`, writing under that label.
+
+```bash
+python scripts/pipeline/make_fuv_detector_orbit_files.py \
+  --base-input ~/IMAGE_FUV_new --workers 5
+```
+
+57 focused tests pass. Complete85 builds122 frames and passes an icReader
+round trip, direct WIC independent-field/geometry checks, fresh SI remapping
+and variance propagation checks, and a second-run skip. Evidence is at
+/tmp/icbuilder_product1_independent_20261019/verification.json.
 
 The separate `scripts/pipeline/make_orbit_nc_files_2d.py` is a small adaptation
 of the original `make_orbit_nc_files.py`, as explicitly requested by the user.
@@ -78,9 +100,9 @@ python scripts/pipeline/make_orbit_nc_files_2d.py \
 The original1D script remains unchanged. The earlier alternative2D runner
 layout, CLI, restart hashes, CSV reports and combined/coregistration runner
 were withdrawn during the user's reset. This native writer does not use that
-infrastructure. Downstream coregistration/precipitation still enforce the
-original1D preprocessing contract; accepting2D native files and explicitly
-selecting independent counts/weights is separate work.
+infrastructure. Product1 coregistration now accepts2D native files and selects
+their independent fields. Product2 precipitation still enforces the original
+preprocessing label and requires its own integration step.
 
 `scripts/pipeline/make_precipitation_detector_orbit_files.py` then consumes
 that schema directly. The implemented image-ratio parity branch uses the

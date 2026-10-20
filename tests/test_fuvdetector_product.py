@@ -11,9 +11,12 @@ import numpy as np
 import pytest
 from netCDF4 import Dataset, num2date
 from scipy.sparse import csr_matrix
+from icreader import open_product
 
 from icbuilder.detector_coregistration import map_si_variance
 from icbuilder.fuvdetector import (
+    BS2D_MODEL_CONTRACT,
+    BS2D_PREPROCESSING_LABEL,
     FUVDetector,
     PREPROCESSING_LABEL,
     SCHEMA_VERSION,
@@ -137,6 +140,54 @@ def test_source_loader_uses_only_the_new_fuvpy_contract(tmp_path):
     np.testing.assert_allclose(source["quality_weight"], 0.75)
     np.testing.assert_allclose(source["variance"], 4.0)
     np.testing.assert_array_equal(source["frame_quality"], [2])
+
+
+def write_independent_source_orbit(path, sensor):
+    """Keep distinct temporal/independent values to expose wrong selection."""
+    write_source_orbit(path, sensor)
+    with Dataset(path, "r+") as nc:
+        nc.pointing_correction_applied = 1
+        nc.pointing_reference_sensor = "WIC"
+        nc.pointing_correction_method = "clock_phase"
+        for name, value in [("dgimg_independent", 20), ("dgweight_independent", .25), ("dgsigma", 8), ("dgsigma_independent", 6)]:
+            nc.createVariable(name, "f8", ("date", "row", "col"))[:] = value
+        for suffix in ["", "_independent"]:
+            model = nc["dgmodel"] if not suffix else nc.createVariable("dgmodel_independent", "f8", ("date", "row", "col"))
+            model[:] = 100 if not suffix else 90
+            model.setncatts(BS2D_MODEL_CONTRACT)
+            model.noise_model = "supplied_quadratic" if suffix else "binned"
+            model.temporal_knot_spacing_target_minutes = 120.
+            if suffix:
+                model.shape_prior = "none"
+            nc.createVariable("dgfit_converged"+suffix, "i1", ("date",))[:] = 1
+
+
+@pytest.mark.parametrize("sensor", ["WIC", "SI12", "SI13"])
+def test_independent_source_selection_keeps_detector_variance_and_geometry(tmp_path, sensor):
+    path = tmp_path/(sensor+".nc")
+    write_independent_source_orbit(path, sensor)
+    source = load_detector_source(path, sensor, preprocessing_label=BS2D_PREPROCESSING_LABEL)
+    assert source["image_field"] == "dgimg_independent"
+    for field, value in [("counts", 20), ("quality_weight", .25), ("variance", 4), ("unsubtracted_counts", 110), ("glat", 70), ("dza", 20)]:
+        np.testing.assert_array_equal(source[field], value)
+
+
+@pytest.mark.parametrize("problem", ["image", "weight", "convergence", "sigma", "pointing"])
+def test_independent_source_requires_its_fields_and_configuration(tmp_path, problem):
+    path = tmp_path/"wic.nc"
+    write_independent_source_orbit(path, "WIC")
+    with Dataset(path, "r+") as nc:
+        if problem in ("image", "weight"):
+            field = "dgimg_independent" if problem == "image" else "dgweight_independent"
+            nc.renameVariable(field, "removed_"+field)
+        elif problem == "convergence":
+            nc["dgfit_converged_independent"][:] = 0
+        elif problem == "sigma":
+            nc["dgmodel_independent"].dgsigma_freeze_iteration = 1
+        else:
+            nc.pointing_correction_applied = 0
+    with pytest.raises(ValueError):
+        load_detector_source(path, "WIC", preprocessing_label=BS2D_PREPROCESSING_LABEL)
 
 
 def test_source_loader_uses_cf_date_units_when_t_start_is_stale(tmp_path):
@@ -435,6 +486,41 @@ def test_detector_product_netcdf_is_self_describing_and_restart_safe(tmp_path):
     ) == "mismatch"
 
 
+@pytest.mark.parametrize("present_si", [None, "SI12", "SI13"])
+def test_independent_product_retains_missing_si_behavior_and_roundtrips(tmp_path, present_si):
+    times = [BASE_TIME, BASE_TIME+timedelta(seconds=120)]
+    wic = regular_camera("WIC", 16, .05, times, 20.)
+    cameras = {"WIC": wic}
+    if present_si:
+        cameras[present_si] = regular_camera(present_si, 8, .10, [BASE_TIME+timedelta(seconds=1)], 5.)
+    for source in cameras.values():
+        source["image_field"] = "dgimg_independent"
+        source["quality_weight"][:] = .25
+    product = FUVDetector(wic, cameras.get("SI12"), cameras.get("SI13"), preprocessing_label=BS2D_PREPROCESSING_LABEL)
+    paths = {sensor.lower(): Path(sensor.lower()+".nc") if sensor in cameras else None for sensor in ("WIC", "SI12", "SI13")}
+    output = tmp_path/"independent.nc"
+    ORBIT_SCRIPT.save_fuv_detector_file(product, output, paths)
+    assert ORBIT_SCRIPT.fuv_detector_file_status(output, BS2D_PREPROCESSING_LABEL, paths) == "complete"
+    with open_product(output) as saved:
+        assert saved.preprocessing_label == BS2D_PREPROCESSING_LABEL
+        assert saved.attrs["background_fit_stage"] == "independent"
+        np.testing.assert_array_equal(saved.read("wic_counts"), 20)
+        np.testing.assert_array_equal(saved.read("wic_quality_weight"), .25)
+        np.testing.assert_array_equal(saved.read("wic_variance"), 4)
+        for sensor in ("si12", "si13"):
+            expected_indices = [0, -1] if sensor.upper() == present_si else [-1, -1]
+            np.testing.assert_array_equal(saved.read(sensor+"_source_index"), expected_indices)
+            assert np.isnan(saved.read(sensor+"_counts", 1)).all()
+            np.testing.assert_array_equal(saved.read(sensor+"_coverage", 1), 0)
+    with Dataset(output, "r+") as nc:
+        nc.background_fit_stage = "temporal"
+    assert ORBIT_SCRIPT.fuv_detector_file_status(output, BS2D_PREPROCESSING_LABEL, paths) == "mismatch"
+    with Dataset(output, "r+") as nc:
+        nc.background_fit_stage = "independent"
+        nc.wic_image_field = "dgimg"
+    assert ORBIT_SCRIPT.fuv_detector_file_status(output, BS2D_PREPROCESSING_LABEL, paths) == "mismatch"
+
+
 def test_product_status_rejects_missing_required_field(tmp_path):
     path = tmp_path / "broken.nc"
     source_files = {"wic": Path("wic.nc"), "si12": None, "si13": None}
@@ -463,15 +549,19 @@ def test_product_status_rejects_missing_required_field(tmp_path):
 
 def test_orbit_script_does_not_allow_a_label_to_overstate_preprocessing():
     assert ORBIT_SCRIPT.validate_label(PREPROCESSING_LABEL) == PREPROCESSING_LABEL
+    assert ORBIT_SCRIPT.validate_label(BS2D_PREPROCESSING_LABEL) == BS2D_PREPROCESSING_LABEL
     with pytest.raises(ValueError, match="explicit preprocessing branch"):
         ORBIT_SCRIPT.validate_label("historical_fuview")
 
     wic = regular_camera("WIC", 4, 0.05, [BASE_TIME], 10.0)
     with pytest.raises(ValueError, match="explicit preprocessing branch"):
         FUVDetector(wic, preprocessing_label="historical_fuview")
+    with pytest.raises(ValueError, match="independent fields"):
+        FUVDetector(wic, preprocessing_label=BS2D_PREPROCESSING_LABEL)
 
 
-def test_orbit_script_can_process_orbits_in_parallel(tmp_path, monkeypatch):
+@pytest.mark.parametrize("label", [None, PREPROCESSING_LABEL])
+def test_orbit_script_can_process_orbits_in_parallel(tmp_path, monkeypatch, label):
     wic_directory = tmp_path / "wic"
     wic_directory.mkdir()
     output_base = tmp_path / "output"
@@ -492,18 +582,22 @@ def test_orbit_script_can_process_orbits_in_parallel(tmp_path, monkeypatch):
     monkeypatch.setattr(ORBIT_SCRIPT, "process_orbit", record_orbit)
     monkeypatch.setattr(ORBIT_SCRIPT, "process_map", record_process_map)
 
-    result = ORBIT_SCRIPT.main([
+    arguments = [
         "--base-input", str(tmp_path),
         "--base-output", str(output_base),
         "--workers", "2",
-    ])
+    ]
+    if label:
+        arguments += ["--preprocessing-label", label]
+    result = ORBIT_SCRIPT.main(arguments)
 
     assert result == [(1, 1), (2, 1)]
     assert [orbit for orbit, _ in calls] == [1, 2]
     assert all(
         settings["base"] == tmp_path
         and settings["output_directory"]
-        == output_base / "fuv_detector" / PREPROCESSING_LABEL
+        == output_base / "fuv_detector" / (label or BS2D_PREPROCESSING_LABEL)
+        and settings["preprocessing_label"] == (label or BS2D_PREPROCESSING_LABEL)
         for _, settings in calls
     )
 

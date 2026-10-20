@@ -16,6 +16,8 @@ from tqdm import tqdm
 from tqdm.contrib.concurrent import process_map
 
 from icbuilder.fuvdetector import (
+    BS2D_IMAGE_FIELDS,
+    BS2D_PREPROCESSING_LABEL,
     IMAGE_FIELDS,
     PREPROCESSING_LABEL,
     SCHEMA_VERSION,
@@ -29,15 +31,15 @@ from icbuilder.fuvdetector import (
 #%% Product validation and atomic publication
 
 def validate_label(label):
-    """Require the one preprocessing configuration implemented in this slice."""
+    """Require an implemented temporal1D or independent2D configuration."""
 
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", label):
         raise ValueError(
             "preprocessing label may contain only letters, numbers, _, -, and ."
         )
-    if label != PREPROCESSING_LABEL:
+    if label not in (PREPROCESSING_LABEL, BS2D_PREPROCESSING_LABEL):
         raise ValueError(
-            f"this implementation supports only {PREPROCESSING_LABEL}; "
+            f"this implementation supports {PREPROCESSING_LABEL} and {BS2D_PREPROCESSING_LABEL}; "
             "another label requires an explicit preprocessing branch"
         )
     return label
@@ -127,13 +129,26 @@ def fuv_detector_file_status(
             if int(product.attrs.get("unsubtracted_counts_stored", 0)) != 1:
                 return "invalid"
 
+            image_fields = IMAGE_FIELDS
+            if preprocessing_label == BS2D_PREPROCESSING_LABEL:
+                image_fields = BS2D_IMAGE_FIELDS
+                expected = {
+                    "background_fit_stage": "independent",
+                    "dgsigma_freeze_iteration": 2,
+                    "pointing_correction_method": "clock_phase",
+                    "pointing_reference_sensor": "WIC"
+                }
+                for name, value in expected.items():
+                    if product.attrs.get(name) != value:
+                        return "mismatch"
+
             for sensor in ("wic", "si12", "si13"):
                 source = source_files[sensor]
                 expected_path = "" if source is None else str(source)
                 if (
                     product.source_products[sensor] != expected_path
                     or product.attrs[f"{sensor}_image_field"]
-                    != IMAGE_FIELDS[sensor.upper()]
+                    != image_fields[sensor.upper()]
                 ):
                     return "mismatch"
                 if (
@@ -259,7 +274,8 @@ def parse_args(argv=None):
     parser.add_argument("--s13-folder", default="s13")
     parser.add_argument("--output-folder", default="fuv_detector")
     parser.add_argument(
-        "--preprocessing-label", default=PREPROCESSING_LABEL
+        "--preprocessing-label", default=BS2D_PREPROCESSING_LABEL,
+        help="Input background configuration (default: independent2D with shared pointing)."
     )
     parser.add_argument(
         "--orbit", action="append", type=int,

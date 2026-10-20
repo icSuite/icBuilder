@@ -1,14 +1,38 @@
 # Handoff - Latest
 
 Last reviewed: 2026-10-19
-Repository snapshot: `modular_pipeline` at `917a50a`
+Repository snapshot: `modular_pipeline` at `981cce3`, Product1 update uncommitted
 Worktree state: unrelated modified examples, validation/debugging files,
 literature and pyproject are preserved. The earlier tracked2D detector runner
 is deleted in the live worktree; that user deletion is preserved. Current
-implementation is the native writer described below, not the withdrawn
-alternative pipeline.
+work updates the existing Product1 runner; it adds no alternative pipeline.
 
-## Latest implementation: minor adaptation of the original native writer
+## Latest: Product1 uses independent2D images and weights
+
+User approved implementation of the proposed small adaptation to
+scripts/pipeline/make_fuv_detector_orbit_files.py. Its existing preprocessing
+label option now defaults to fuvpy_bs2d_sigma2_pointing_v1; the original
+fuvpy_bs_directional_v1 route remains explicitly selectable. The supporting
+loader already selected dgimg_independent/dgweight_independent. The runner
+now accepts that branch and validates its field/stage/sigma/pointing metadata
+when restarting and publishing. FUVDetector's2D guard permits absent SI
+sources, preserving WIC-led frame support. Existing native corrected geometry,
+img_variance, schema2 and overlap/time matching are retained.
+
+57 Product1/coregistration/legacy-precipitation tests pass. A complete native85
+run builds122x256x256 in31s, reads through icReader and passes independent
+field/geometry checks for all WIC frames. Fresh SI12/SI13 mapping reproduces
+counts, weights and propagated variances at frames0/61/121. A repeat CLI run
+reports1 complete,0 pending. Scratch products and verification.json:
+/tmp/icbuilder_product1_independent_20261019.
+
+Deploy icBuilder modular_pipeline. [[Processing Pipeline]] owns the command
+and output layout. Product2 still requires the old label and needs its own
+integration step before consuming these new Product1 files. No reader change
+is required for Product1. The full native server run's completion and actual
+197/365 outputs remain unconfirmed by the available user logs.
+
+## Earlier implementation: minor adaptation of the original native writer
 
 The user reset the task after the combined/split alternatives: copy the
 behavior of `scripts/pipeline/make_orbit_nc_files.py`, changing scientific
@@ -46,8 +70,8 @@ batch behavior. No full external corpus or tracked example was regenerated.
 Ignored report: `figures/debugging/original_style_2d_20261019/checks.json`.
 Scratch output: `/tmp/icbuilder_original_style_2d_20261019`.
 [[Processing Pipeline]] owns the exact command and status/output contract.
-The existing downstream source-contract checks and field selection remain
-unchanged; integrating2D into coregistration is outside this reset task.
+That checkpoint left downstream selection unchanged. Product1 ingestion is
+now integrated in the latest section above; Product2 remains separate work.
 
 ## Server follow-up: frame/sequence guards reject complete orbits
 
@@ -106,12 +130,10 @@ figures/validation/pointing_counter_time_20261019/complete_orbit_comparison.json
 
 - Central update needed: No
 - Changes: None
-- Sync summary: Native2D preprocessing now follows the existing writer's
-  infrastructure and interface. Scientific parity and continuation checks
-  pass for local tests; the reported197/365 frame/counter conditions now
-  have locally tested handling, awaiting a real server rerun. Priority/deadlines are unchanged;
-  earlier alternative-runner claims
-  below are historical.
+- Sync summary: Existing Product1 now consumes independent2D native fields
+  by default, preserving its schema and mapping and retaining the original1D
+  option. Complete85 and57 focused tests pass. Product2 ingestion is the next
+  technical boundary; no priority or deadline changed.
 
 ## Latest dependency implementation: FUVPY2D and shared metadata pointing
 

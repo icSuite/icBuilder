@@ -426,8 +426,8 @@ class FUVDetector:
             )
         if preprocessing_label == BS2D_PREPROCESSING_LABEL:
             for source in (wic, si12, si13):
-                if source is None or source.get("image_field") != "dgimg_independent":
-                    raise ValueError("the 2D pointing branch requires all three independent sensor sources")
+                if source is not None and source.get("image_field") != "dgimg_independent":
+                    raise ValueError("the 2D pointing branch requires independent fields in each supplied sensor source")
 
         self.product_type = "fuv_detector"
         self.representation = "detector"

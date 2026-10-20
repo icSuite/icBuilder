@@ -1,6 +1,6 @@
 # Detector-First Product Architecture
 
-Last reviewed: 2026-10-05 (CS coverage/uncertainty interpretation)
+Last reviewed: 2026-10-19 (Product1 independent2D ingestion)
 
 Status: The detector-first direction is accepted. Detector Product 1,
 image-ratio Product 2, and Robinson Product 3 are implemented on the selected
@@ -163,12 +163,19 @@ stable observational boundary between camera preprocessing and replaceable
 precipitation models. It contains WIC, SI12, and SI13 on the same WIC detector
 pixels without applying a proton-energy or electron-energy model.
 
-The implemented Product-1 ingestion target is the new fuvpy BS-directional
-model on `background_model_asymmetry`, labelled
-`fuvpy_bs_directional_v1`. Fixed FUVVIEW, active `p`, active `p2`, and legacy
-Ohma fuvpy remain comparison sources rather than live Product-1 ingestion
-branches. A scientifically selected alternative would require a separate,
-explicit Product-1 contract.
+The default Product-1 ingestion target is the fuvpy independent x/sine2D
+solution, labelled `fuvpy_bs2d_sigma2_pointing_v1`. Native files retain the
+temporal and independent fits with sigma frozen after temporal fit2 and
+shared metadata pointing. Product1 selects dgimg_independent counts and
+dgweight_independent quality weights using the saved corrected geometry;
+detector variance remains img_variance. The schema2 mapping and missing-SI
+semantics below are preserved. The original BS-directional1D temporal route,
+labelled `fuvpy_bs_directional_v1`, remains explicitly selectable in the same
+runner. Product2 currently still requires that original label and needs a
+separate ingestion update for the new Product1 configuration.
+
+Fixed FUVVIEW, active `p`, active `p2`, and legacy Ohma fuvpy remain comparison
+sources rather than live Product-1 ingestion branches.
 
 ### Implemented frame support
 
