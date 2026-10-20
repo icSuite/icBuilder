@@ -24,7 +24,7 @@ def setup_orbit(tmp_path, monkeypatch):
         shape = (3, 5, 5)
         dates = np.datetime64('2001-01-01')+np.arange(3)*np.timedelta64(120, 's')
         fields = {name: (('date', 'row', 'col'), np.full(shape, value, dtype=float)) for name, value in [('img', 110), ('img_variance', 4), ('mlat', 70), ('glat', 70), ('sza', 80), ('dza', 20)]}
-        fields.update({'frame_quality': ('date', [2, 0, 2]), 'hemisphere': ('date', ['north', 'south', 'north']), 'pointing_time': ('date', dates), 'id': xr.DataArray(sensor)})
+        fields.update({'frame_quality': ('date', [2, 0, 2]), 'pointing_valid': ('date', [True, True, True]), 'hemisphere': ('date', ['north', 'south', 'north']), 'pointing_time': ('date', dates), 'id': xr.DataArray(sensor)})
         inputs[prefix] = xr.Dataset(fields, coords={'date': dates, 'row': np.arange(5), 'col': np.arange(5)})
         (raw/(prefix+'_data')).mkdir(parents=True)
         name = prefix+'_or0085.idl'
@@ -44,8 +44,11 @@ def setup_orbit(tmp_path, monkeypatch):
 
     def correct(cameras, **settings):
         assert set(cameras) == {'WIC', 'SI12', 'SI13'}
-        assert all(data.sizes['date'] == 3 and 'south' in data.hemisphere.values for data in cameras.values())
-        events.append(('correct', None))
+        reference = settings['reference_wic']
+        assert reference.sizes['date'] == 3 and 'south' in reference.hemisphere.values
+        assert settings['method'] == 'clock_phase'
+        assert all(np.all(data.hemisphere.values == 'north') and np.all(data.frame_quality.values >= 2) and np.all(data.pointing_valid.values) for data in cameras.values())
+        events.append(('correct', {sensor: data.sizes['date'] for sensor, data in cameras.items()}))
         result = {sensor: data.copy(deep=True) for sensor, data in cameras.items()}
         for data in result.values():
             data.attrs['pointing_correction_applied'] = 1
@@ -75,13 +78,14 @@ def test_original_cli_defaults_and_flags_are_preserved():
     defaults = RUNNER.parse_args([])
     assert defaults.do_wic and defaults.do_s12 and defaults.do_s13
     assert defaults.parallel is False and defaults.pool_size == 10
-    assert defaults.base_output is None
+    assert defaults.base_output is None and defaults.pointing_method == 'clock_phase'
     args = RUNNER.parse_args(['--do_wic', 'false', '--do_s12', 'yes', '--do_s13', '0', '--parallel', 'true', '--pool_size', '3', '--base', '/input', '--base_output', '/output'])
     assert (args.do_wic, args.do_s12, args.do_s13, args.parallel) == (False, True, False, True)
     assert args.pool_size == 3 and args.base_input == '/input' and args.base_output == '/output'
+    assert RUNNER.parse_args(['--pointing_method', 'position']).pointing_method == 'position'
 
 
-def test_full_stream_pointing_and_both_models_saved_in_original_layout(setup_orbit):
+def test_selected_frame_pointing_and_both_models_saved_in_original_layout(setup_orbit):
     raw, output, names, inputs, events = setup_orbit
     frozen = {prefix: data.copy(deep=True) for prefix, data in inputs.items()}
     assert RUNNER.process_single_orbit(85, names, raw, output, tuple(SENSORS)) == {prefix: (85, 1) for prefix in SENSORS}
@@ -98,11 +102,12 @@ def test_full_stream_pointing_and_both_models_saved_in_original_layout(setup_orb
         xr.testing.assert_identical(inputs[prefix], frozen[prefix])
 
 
-def test_selected_sensor_still_loads_and_corrects_all_cameras(setup_orbit):
+def test_selected_sensor_uses_wic_reference_without_correcting_disabled_cameras(setup_orbit):
     raw, output, names, inputs, events = setup_orbit
     assert RUNNER.process_single_orbit(85, names, raw, output, ('s12',)) == {'s12': (85, 1)}
     assert [event for event in events if event[0] == 'fit'] == [('fit', 's12')]
     assert {event[1] for event in events if event[0] == 'read'} == set(SENSORS)
+    assert next(event[1] for event in events if event[0] == 'correct') == {'WIC': 0, 'SI12': 2, 'SI13': 0}
     assert not (output/'wic'/'wic_or0085.nc').exists()
 
 
@@ -119,6 +124,26 @@ def test_wic_no_data_is_zero_and_does_not_block_si(setup_orbit, problem):
     assert result == {'wic': (83, 0), 's12': (83, 1), 's13': (83, 1)}
     assert [event for event in events if event[0] == 'fit'] == [('fit', 's12'), ('fit', 's13')]
     assert not (output/'wic'/'wic_or0083.nc').exists()
+
+
+def test_all_rejected_frames_skip_pixel_fits_but_keep_wic_reference(setup_orbit):
+    raw, output, names, inputs, events = setup_orbit
+    for data in inputs.values():
+        data.frame_quality.values[:] = 0
+    result = RUNNER.process_single_orbit(83, names, raw, output, tuple(SENSORS))
+    assert result == {prefix: (83, 0) for prefix in SENSORS}
+    assert [event[0] for event in events] == ['read']*3 + ['correct']
+
+
+def test_invalid_pointing_excludes_only_affected_science_frame(setup_orbit):
+    raw, output, names, inputs, events = setup_orbit
+    inputs['s12'].pointing_valid.values[0] = False
+    result = RUNNER.process_single_orbit(85, names, raw, output, tuple(SENSORS))
+    assert result == {prefix: (85, 1) for prefix in SENSORS}
+    assert next(event[1] for event in events if event[0] == 'correct') == {'WIC': 2, 'SI12': 1, 'SI13': 2}
+    with xr.open_dataset(output/'s12'/'s12_or0085.nc') as saved:
+        assert saved.sizes['date'] == 1
+        assert bool(saved.pointing_valid.values[0])
 
 
 def test_sensor_fit_failure_is_minus_one_and_other_sensors_continue(setup_orbit, monkeypatch):
@@ -142,6 +167,33 @@ def test_missing_shared_stream_fails_selected_sensors_without_fitting(setup_orbi
     assert not any(event[0] == 'fit' for event in events)
 
 
+def test_robust_state_excludes_unresolved_and_does_not_require_missing_si(setup_orbit, monkeypatch):
+    raw, output, names, inputs, events = setup_orbit
+    names['s13'] = []
+    saved = {}
+
+    def robust(cameras, **settings):
+        assert set(cameras) == {'WIC', 'SI12'}
+        assert settings['method'] == 'robust_state'
+        assert settings['reference_wic'].sizes['date'] == 3
+        result = {sensor: data.copy(deep=True) for sensor, data in cameras.items()}
+        for sensor, data in result.items():
+            data.attrs['pointing_correction_applied'] = 1
+            status = np.full(data.sizes['date'], 'supported', dtype='<U16')
+            if sensor == 'SI12':
+                status[0] = 'unresolved'
+            data['pointing_status'] = ('date', status)
+        return result
+
+    monkeypatch.setattr(RUNNER.fuv, 'correct_pointing', robust)
+    monkeypatch.setattr(xr.Dataset, 'to_netcdf', lambda data, path, **kwargs: saved.update({Path(path).stem.split('_')[0]: data.copy(deep=True)}))
+    result = RUNNER.process_single_orbit(85, names, raw, output, ('wic', 's12'), pointing_method='robust_state')
+    assert result == {'wic': (85, 1), 's12': (85, 1)}
+    assert saved['wic'].sizes['date'] == 2
+    assert saved['s12'].sizes['date'] == 1
+    assert saved['s12'].pointing_status.values[0] == 'supported'
+
+
 def test_main_reads_hdf_and_writes_original_status_npy_for_selected_sensor(setup_orbit):
     raw, output, names, inputs, events = setup_orbit
     for prefix in SENSORS:
@@ -159,7 +211,8 @@ def test_orbit_union_and_availability_arrays_only_include_indexed_selected_senso
     files = {prefix: pd.DataFrame({'orbit': orbits, 'filename': [prefix+'_'+str(orbit)+'.idl' for orbit in orbits]}) for prefix, orbits in [('wic', [83, 85]), ('s12', [85, 86]), ('s13', [85])]}
     calls = []
 
-    def process(orbit, file_lists, inpath, outpath, sensors):
+    def process(orbit, file_lists, inpath, outpath, sensors, pointing_method):
+        assert pointing_method == 'clock_phase'
         calls.append((orbit, tuple(sensors)))
         return {prefix: (orbit, 1 if orbit == 85 else -1) for prefix in sensors}
 

@@ -48,19 +48,23 @@ def parse_args(argv=None):
                         help='Base directory containing orbit indices and raw IDL data')
     parser.add_argument('--base_output', type=str, default=None,
                         help='Base directory for orbit products; defaults to base_input')
+    parser.add_argument('--pointing_method', choices=['position', 'clock_phase', 'robust_state'], default='clock_phase',
+                        help='Shared WIC metadata estimator; position repairs isolated position outliers only (default clock_phase)')
 
     return parser.parse_args(argv)
 
 #%% One orbit: shared pointing, then fit each selected sensor
 
-def process_single_orbit(orbit, file_lists, inpath, outpath, sensors):
+def process_single_orbit(orbit, file_lists, inpath, outpath, sensors, pointing_method='clock_phase'):
     results = {prefix: (orbit, -1) for prefix in sensors}
     try:
         print(f'Starting on orbit {orbit}', flush=True)
         images = {}
         for prefix, sensor in SENSOR_IDS.items():
             if not file_lists[prefix]:
-                raise ValueError(f'No {sensor} input files for shared pointing in orbit {orbit}')
+                if pointing_method != 'robust_state':
+                    raise ValueError(f'No {sensor} input files for shared pointing in orbit {orbit}')
+                continue
             filenames = [pjoin(inpath, prefix + '_data', name) for name in file_lists[prefix]]
             images[sensor] = fuv.read_idl(
                 filenames, dzalim=75, reflat=(prefix == 'wic'),
@@ -68,8 +72,21 @@ def process_single_orbit(orbit, file_lists, inpath, outpath, sensors):
                 wic_variance_model='reference', viewing_geometry=True, pointing_metadata=True, skip_unmapped=True
             )
 
-        # Correct all sensors together, before selecting hemisphere or quality.
-        images = fuv.correct_pointing(images, method='clock_phase')
+        # Fit the shared correction from the full WIC metadata timeline.
+        # Recalculate pixels only for northern science frames kept by BS2D.
+        if 'WIC' not in images:
+            raise ValueError(f'No WIC metadata for shared pointing in orbit {orbit}')
+        reference_wic = images['WIC']
+        enabled_sensors = {SENSOR_IDS[prefix] for prefix in sensors}
+        selected = {}
+        for sensor, data in images.items():
+            keep = (data.hemisphere.values == 'north') & (data.frame_quality.values >= 2) & data.pointing_valid.values
+            if sensor not in enabled_sensors:
+                keep[:] = False
+            selected[sensor] = data.isel(date=np.flatnonzero(keep))
+        images = fuv.correct_pointing(selected, method=pointing_method, reference_wic=reference_wic)
+        if pointing_method == 'robust_state':
+            images = {sensor: data.isel(date=np.flatnonzero(data.pointing_status.values == 'supported')) for sensor, data in images.items()}
 
     except Exception as e:
         print(f'Shared pointing : {orbit} : failed with error {e}', flush=True)
@@ -78,9 +95,7 @@ def process_single_orbit(orbit, file_lists, inpath, outpath, sensors):
     for prefix in sensors:
         try:
             s = images[SENSOR_IDS[prefix]]
-            s = s.sel(date=s.hemisphere.date[s.hemisphere == 'north'])
-
-            if np.all(np.isnan(s['mlat'].values)) or not np.any(s['frame_quality'].values >= 2):
+            if s.sizes['date'] == 0 or np.all(np.isnan(s['mlat'].values)):
                 print(f'Skipping {prefix} orbit {orbit}, no data', flush=True)
                 results[prefix] = (orbit, 0)
                 continue
@@ -112,12 +127,13 @@ def background_removal_serial(args_list):
         results.append(process_single_orbit(*args))
     return results
 
-def background_removal(files, inpath, outpath, sensors, parallel=True, pool_size=10):
+def background_removal(files, inpath, outpath, sensors, parallel=True, pool_size=10, pointing_method='clock_phase'):
     """Process orbits jointly; return each sensor's original (orbit, status) array.
 
-    Status is 0 for no data, 1 for success, and -1 for failure. All three raw
-    sensor streams are needed for shared pointing; only selected sensors fit
-    backgrounds and write files.
+    Status is 0 for no data, 1 for success, and -1 for failure. The established
+    clock-phase method requires all three raw streams. The experimental robust
+    state uses WIC as its only fitted reference and processes whichever selected
+    SI streams are present. Only selected sensors fit backgrounds and write files.
     """
     for prefix in sensors:
         Path(pjoin(outpath, prefix)).mkdir(parents=True, exist_ok=True)
@@ -127,7 +143,7 @@ def background_removal(files, inpath, outpath, sensors, parallel=True, pool_size
     for orbit in orbits:
         file_lists = {prefix: table.loc[table['orbit'] == orbit, 'filename'].tolist() for prefix, table in files.items()}
         orbit_sensors = tuple(prefix for prefix in sensors if file_lists[prefix])
-        args_list.append((orbit, file_lists, inpath, outpath, orbit_sensors))
+        args_list.append((orbit, file_lists, inpath, outpath, orbit_sensors, pointing_method))
 
     if parallel:
         results = background_removal_parallel(args_list, pool_size)
@@ -148,7 +164,7 @@ def main(argv=None):
     base_output = args.base_output if args.base_output is not None else base_input
 
     print(f'Data settings:\n WIC: {args.do_wic}\n SI12: {args.do_s12}\n SI13: {args.do_s13}\n')
-    print(f'Compute settings:\n Parallel: {args.parallel}\n Pool: {args.pool_size}\n')
+    print(f'Compute settings:\n Parallel: {args.parallel}\n Pool: {args.pool_size}\n Pointing: {args.pointing_method}\n')
     print(f'Input base set to {base_input}')
     print(f'Output base set to {base_output}')
 
@@ -164,7 +180,8 @@ def main(argv=None):
         return
 
     avail_orbit = background_removal(files, base_input, base_output, sensors,
-                                     parallel=args.parallel, pool_size=args.pool_size)
+                                     parallel=args.parallel, pool_size=args.pool_size,
+                                     pointing_method=args.pointing_method)
     for prefix in sensors:
         np.save(pjoin(base_output, prefix + '_avail_orbit.npy'), avail_orbit[prefix])
 
