@@ -142,13 +142,13 @@ def test_source_loader_uses_only_the_new_fuvpy_contract(tmp_path):
     np.testing.assert_array_equal(source["frame_quality"], [2])
 
 
-def write_independent_source_orbit(path, sensor):
+def write_independent_source_orbit(path, sensor, pointing_method="clock_phase"):
     """Keep distinct temporal/independent values to expose wrong selection."""
     write_source_orbit(path, sensor)
     with Dataset(path, "r+") as nc:
         nc.pointing_correction_applied = 1
         nc.pointing_reference_sensor = "WIC"
-        nc.pointing_correction_method = "clock_phase"
+        nc.pointing_correction_method = pointing_method
         for name, value in [("dgimg_independent", 20), ("dgweight_independent", .25), ("dgsigma", 8), ("dgsigma_independent", 6)]:
             nc.createVariable(name, "f8", ("date", "row", "col"))[:] = value
         for suffix in ["", "_independent"]:
@@ -163,11 +163,13 @@ def write_independent_source_orbit(path, sensor):
 
 
 @pytest.mark.parametrize("sensor", ["WIC", "SI12", "SI13"])
-def test_independent_source_selection_keeps_detector_variance_and_geometry(tmp_path, sensor):
+@pytest.mark.parametrize("pointing_method", ["position", "clock_phase"])
+def test_independent_source_selection_keeps_detector_variance_and_geometry(tmp_path, sensor, pointing_method):
     path = tmp_path/(sensor+".nc")
-    write_independent_source_orbit(path, sensor)
+    write_independent_source_orbit(path, sensor, pointing_method)
     source = load_detector_source(path, sensor, preprocessing_label=BS2D_PREPROCESSING_LABEL)
     assert source["image_field"] == "dgimg_independent"
+    assert source["pointing_correction_method"] == pointing_method
     for field, value in [("counts", 20), ("quality_weight", .25), ("variance", 4), ("unsubtracted_counts", 110), ("glat", 70), ("dza", 20)]:
         np.testing.assert_array_equal(source[field], value)
 
@@ -496,6 +498,8 @@ def test_independent_product_retains_missing_si_behavior_and_roundtrips(tmp_path
     for source in cameras.values():
         source["image_field"] = "dgimg_independent"
         source["quality_weight"][:] = .25
+        source["pointing_correction_method"] = "position"
+        source["pointing_reference_sensor"] = "WIC"
     product = FUVDetector(wic, cameras.get("SI12"), cameras.get("SI13"), preprocessing_label=BS2D_PREPROCESSING_LABEL)
     paths = {sensor.lower(): Path(sensor.lower()+".nc") if sensor in cameras else None for sensor in ("WIC", "SI12", "SI13")}
     output = tmp_path/"independent.nc"
@@ -504,6 +508,7 @@ def test_independent_product_retains_missing_si_behavior_and_roundtrips(tmp_path
     with open_product(output) as saved:
         assert saved.preprocessing_label == BS2D_PREPROCESSING_LABEL
         assert saved.attrs["background_fit_stage"] == "independent"
+        assert saved.attrs["pointing_correction_method"] == "position"
         np.testing.assert_array_equal(saved.read("wic_counts"), 20)
         np.testing.assert_array_equal(saved.read("wic_quality_weight"), .25)
         np.testing.assert_array_equal(saved.read("wic_variance"), 4)
@@ -567,6 +572,9 @@ def test_orbit_script_can_process_orbits_in_parallel(tmp_path, monkeypatch, labe
     output_base = tmp_path / "output"
     for orbit in (1, 2):
         (wic_directory / f"wic_or{orbit:04d}.nc").touch()
+    np.save(tmp_path / "wic_avail_orbit.npy", [[1, 1], [2, 1]])
+    np.save(tmp_path / "s12_avail_orbit.npy", [[1, 0], [2, 0]])
+    np.save(tmp_path / "s13_avail_orbit.npy", [[1, 0], [2, 0]])
 
     calls = []
 
@@ -598,6 +606,7 @@ def test_orbit_script_can_process_orbits_in_parallel(tmp_path, monkeypatch, labe
         and settings["output_directory"]
         == output_base / "fuv_detector" / (label or BS2D_PREPROCESSING_LABEL)
         and settings["preprocessing_label"] == (label or BS2D_PREPROCESSING_LABEL)
+        and settings["successful_orbits"]["wic"] == {1, 2}
         for _, settings in calls
     )
 
@@ -611,6 +620,7 @@ def test_worker_failure_identifies_the_orbit(tmp_path, monkeypatch):
     wic_directory = tmp_path / "wic"
     wic_directory.mkdir()
     (wic_directory / "wic_or0042.nc").touch()
+    successful = {"wic": {42}, "si12": set(), "si13": set()}
 
     def fail(*args, **kwargs):
         raise ValueError("bad geometry")
@@ -624,4 +634,25 @@ def test_worker_failure_identifies_the_orbit(tmp_path, monkeypatch):
             tmp_path / "output",
             PREPROCESSING_LABEL,
             "test",
+            successful,
         )
+
+
+def test_availability_status_excludes_stale_sensor_files(tmp_path):
+    for folder in ("wic", "s12", "s13"):
+        (tmp_path / folder).mkdir()
+    (tmp_path / "wic" / "wic_or0001.nc").touch()
+    (tmp_path / "s12" / "s12_or0001.nc").touch()
+    (tmp_path / "s13" / "s13_or0001.nc").touch()
+    np.save(tmp_path / "wic_avail_orbit.npy", [[1, 1], [2, -1]])
+    np.save(tmp_path / "s12_avail_orbit.npy", [[1, -1]])
+    np.save(tmp_path / "s13_avail_orbit.npy", [[1, 1]])
+
+    successful = ORBIT_SCRIPT.load_successful_orbits(tmp_path)
+    paths = ORBIT_SCRIPT.source_paths(
+        tmp_path, 1, successful, "wic", "s12", "s13"
+    )
+
+    assert successful["wic"] == {1}
+    assert paths["si12"] is None
+    assert paths["si13"] == tmp_path / "s13" / "s13_or0001.nc"

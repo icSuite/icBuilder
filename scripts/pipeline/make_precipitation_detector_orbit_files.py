@@ -14,6 +14,7 @@ from tqdm import tqdm
 from tqdm.contrib.concurrent import process_map
 
 from icbuilder.kp import load_gfz_kp
+from icbuilder.fuvdetector import BS2D_PREPROCESSING_LABEL
 from icbuilder.precipitationdetector import (
     BACKGROUND_QUALITY_WEIGHT_METHOD,
     COUNT_SOURCES,
@@ -258,7 +259,7 @@ def parse_args(argv=None):
         help="Base directory for Product 2 (default: --base-input).",
     )
     parser.add_argument(
-        "--input-folder", default="fuv_detector/fuvpy_bs_directional_v1"
+        "--input-folder", default=f"fuv_detector/{BS2D_PREPROCESSING_LABEL}"
     )
     parser.add_argument("--output-folder", default="precipitation_detector")
     parser.add_argument(

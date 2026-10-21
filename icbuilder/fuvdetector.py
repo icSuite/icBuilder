@@ -53,6 +53,7 @@ BS_MODEL_CONTRACT = {
 
 BS2D_PREPROCESSING_LABEL = "fuvpy_bs2d_sigma2_pointing_v1"
 BS2D_IMAGE_FIELDS = {sensor: "dgimg_independent" for sensor in IMAGE_FIELDS}
+BS2D_POINTING_METHODS = ("position", "clock_phase")
 BS2D_X_KNOTS = np.sort(np.r_[-3.5, np.cos(np.deg2rad([70, 80, 85, 90, 95, 100, 110, 120])), 1.5, 3.5])
 BS2D_X_KNOTS[np.abs(BS2D_X_KNOTS) < 1e-12] = 0
 BS2D_MODEL_CONTRACT = {
@@ -180,8 +181,10 @@ def _validate_background_model(nc, filename, preprocessing_label=PREPROCESSING_L
         }
         if getattr(nc, "pointing_correction_applied", 0) != 1 or getattr(nc, "pointing_reference_sensor", "") != "WIC":
             raise ValueError(f"{filename} requires shared WIC metadata pointing correction")
-        if getattr(nc, "pointing_correction_method", "") != "clock_phase":
-            raise ValueError(f"{filename} requires clock_phase metadata correction")
+        if getattr(nc, "pointing_correction_method", "") not in BS2D_POINTING_METHODS:
+            raise ValueError(
+                f"{filename} requires position or clock_phase metadata correction"
+            )
         for name in ("dgfit_converged", "dgfit_converged_independent"):
             if name not in nc.variables or not np.all(_as_float(nc.variables[name]) == 1):
                 raise ValueError(f"{filename} requires converged temporal and independent fits")
@@ -245,6 +248,8 @@ def load_detector_source(filename, sensor, *, preprocessing_label=PREPROCESSING_
         sza = _as_float(nc.variables["sza"])
         dza = _as_float(nc.variables["dza"])
         time = _source_times(nc)
+        pointing_method = getattr(nc, "pointing_correction_method", "")
+        pointing_reference = getattr(nc, "pointing_reference_sensor", "")
 
     shape = counts.shape
     if len(shape) != 3 or time.shape != (shape[0],):
@@ -283,6 +288,8 @@ def load_detector_source(filename, sensor, *, preprocessing_label=PREPROCESSING_
         "sza": sza,
         "dza": dza,
         "geometry_valid": np.isfinite(glat) & np.isfinite(glon),
+        "pointing_correction_method": pointing_method,
+        "pointing_reference_sensor": pointing_reference,
     })
     return source
 
@@ -428,6 +435,18 @@ class FUVDetector:
             for source in (wic, si12, si13):
                 if source is not None and source.get("image_field") != "dgimg_independent":
                     raise ValueError("the 2D pointing branch requires independent fields in each supplied sensor source")
+            pointing_methods = {
+                source.get("pointing_correction_method", "")
+                for source in (wic, si12, si13) if source is not None
+            }
+            pointing_references = {
+                source.get("pointing_reference_sensor", "")
+                for source in (wic, si12, si13) if source is not None
+            }
+            if len(pointing_methods) != 1 or not pointing_methods.issubset(BS2D_POINTING_METHODS):
+                raise ValueError("the supplied sensors must use the same supported pointing correction")
+            if pointing_references != {"WIC"}:
+                raise ValueError("the supplied sensors must use WIC as their pointing reference")
 
         self.product_type = "fuv_detector"
         self.representation = "detector"
@@ -438,6 +457,10 @@ class FUVDetector:
             self.time_tolerance_seconds
         )
         self.software_version = str(software_version)
+        self.pointing_correction_method = (
+            next(iter(pointing_methods))
+            if preprocessing_label == BS2D_PREPROCESSING_LABEL else ""
+        )
         self.time = np.asarray(wic["time"], dtype=object).copy()
         self.shape = np.asarray(wic["counts"]).shape
         if len(self.shape) != 3 or self.time.shape != (self.shape[0],):
@@ -702,7 +725,7 @@ class FUVDetector:
                 nc.quality_weight_method = "fuvpy dgweight_independent on the native detector"
                 nc.background_fit_stage = "independent"
                 nc.dgsigma_freeze_iteration = 2
-                nc.pointing_correction_method = "clock_phase"
+                nc.pointing_correction_method = self.pointing_correction_method
                 nc.pointing_reference_sensor = "WIC"
             nc.detector_noise_model = DETECTOR_NOISE_MODEL
             nc.coordinate_system = COORDINATE_SYSTEM

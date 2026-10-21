@@ -22,6 +22,11 @@ from icbuilder.conductancedetector import (
 )
 
 
+#%% Pipeline defaults
+
+DEFAULT_RETRIEVAL_LABEL = "IR_hardy_smoothed_wic0p8_si120_si131p2"
+
+
 #%% Product validation and atomic publication
 
 def conductance_detector_file_status(
@@ -205,8 +210,11 @@ def parse_args(argv=None):
         "--output-folder", default="conductance_detector"
     )
     parser.add_argument(
-        "--retrieval-label", default="IR_hardy",
-        help="Product-2 retrieval subfolder (default: IR_hardy).",
+        "--retrieval-label", default=DEFAULT_RETRIEVAL_LABEL,
+        help=(
+            "Product-2 retrieval subfolder "
+            f"(default: {DEFAULT_RETRIEVAL_LABEL})."
+        ),
     )
     parser.add_argument(
         "--conductance-model",

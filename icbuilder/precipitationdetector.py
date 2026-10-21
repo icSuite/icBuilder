@@ -23,6 +23,7 @@ from scipy.ndimage import convolve
 
 from .kp import load_gfz_kp, match_gfz_kp
 from .fuvdetector import (
+    BS2D_PREPROCESSING_LABEL,
     PREPROCESSING_LABEL,
     SCHEMA_VERSION as FUV_SCHEMA_VERSION,
     SOURCE_TIME_DECODING,
@@ -33,6 +34,10 @@ from .fuvdetector import (
 #%% Product configuration
 
 SCHEMA_VERSION = 4
+SUPPORTED_PREPROCESSING_LABELS = (
+    PREPROCESSING_LABEL,
+    BS2D_PREPROCESSING_LABEL,
+)
 
 PREPROCESSING_METADATA_ATTRIBUTES = (
     "count_source", "smoothed", "smoothing_method",
@@ -162,12 +167,12 @@ def load_fuv_detector(filename, include_unsubtracted=False):
             source.product_type != "fuv_detector"
             or source.representation != "detector"
             or int(source.schema_version) != FUV_SCHEMA_VERSION
-            or source.preprocessing_label != PREPROCESSING_LABEL
+            or source.preprocessing_label not in SUPPORTED_PREPROCESSING_LABELS
             or source.source_time_decoding != SOURCE_TIME_DECODING
         ):
             raise ValueError(
                 f"{filename} is not a supported schema-{FUV_SCHEMA_VERSION} "
-                f"{PREPROCESSING_LABEL} fuv_detector product"
+                "fuv_detector product"
             )
 
         product = {

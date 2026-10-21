@@ -89,7 +89,6 @@ class ConductanceCS:
         self.grid = grid
         self.grid_id = DETECTOR_CS_GRID_ID
         self.software_version = str(software_version)
-        self.companion_precipitation_cs = ""
 
         detector_shape = _require_source(source, filename)
         self.shape = (detector_shape[0], *grid.shape)
@@ -402,7 +401,6 @@ class ConductanceCS:
             nc.source_precipitation_detector_sha256 = (
                 self.source_precipitation_detector_sha256
             )
-            nc.companion_precipitation_cs = self.companion_precipitation_cs
             nc.source_fuv_detector = self.source_fuv_detector
             nc.source_fuv_detector_sha256 = self.source_fuv_detector_sha256
             nc.source_preprocessing_label = self.source_preprocessing_label

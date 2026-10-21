@@ -178,7 +178,6 @@ def test_hardy_downstream_restart_rejects_corruption(tmp_path, stage, corruption
             pcs, ccs = build_detector_cs_products(p2_path, p3_path)
             pcs_path = tmp_path / "pcs.nc"
             pcs.to_nc(pcs_path)
-            ccs.companion_precipitation_cs = str(pcs_path)
             ccs_path = tmp_path / "ccs.nc"
             ccs.to_nc(ccs_path)
             script = _pipeline_script("make_detector_cs_orbit_files.py")
@@ -187,7 +186,7 @@ def test_hardy_downstream_restart_rejects_corruption(tmp_path, stage, corruption
                 status = lambda: script.precipitation_cs_file_status(output, p2_path)
             else:
                 output = ccs_path
-                status = lambda: script.conductance_cs_file_status(output, p3_path, pcs_path)
+                status = lambda: script.conductance_cs_file_status(output, p3_path)
             flag_name = "E0_response_range_fraction"
         expected_complete = "complete"
         expected_invalid = "mismatch" if corruption == "coefficients" else "invalid"

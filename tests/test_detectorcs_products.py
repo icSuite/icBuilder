@@ -15,7 +15,7 @@ from netCDF4 import Dataset
 
 from icbuilder.conductancedetector import ConductanceDetector
 from icbuilder.detectorcs import build_detector_cs_products
-from icbuilder.fuvdetector import FUVDetector, PREPROCESSING_LABEL
+from icbuilder.fuvdetector import BS2D_PREPROCESSING_LABEL, FUVDetector
 from icbuilder.grids import DETECTOR_CS_GRID_ID
 from icbuilder.precipitationdetector import PrecipitationDetector
 
@@ -31,6 +31,7 @@ ORBIT_SCRIPT = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ORBIT_SCRIPT)
 
 BASE_TIME = datetime(2001, 1, 1, 1)
+RETRIEVAL_LABEL = ORBIT_SCRIPT.DEFAULT_RETRIEVAL_LABEL
 
 
 def regular_camera(sensor, size, spacing, times, value):
@@ -42,7 +43,7 @@ def regular_camera(sensor, size, spacing, times, value):
     camera = {
         "sensor": sensor,
         "source_file": f"{sensor.lower()}.nc",
-        "image_field": "dgimg",
+        "image_field": "dgimg_independent",
         "unsubtracted_image_field": "img",
         "time": np.asarray(times, dtype=object),
         "counts": np.full(frame_shape, value, dtype=float),
@@ -57,6 +58,8 @@ def regular_camera(sensor, size, spacing, times, value):
         "sza": np.full(frame_shape, 80.0),
         "dza": np.full(frame_shape, 20.0),
         "geometry_valid": np.ones(frame_shape, dtype=bool),
+        "pointing_correction_method": "position",
+        "pointing_reference_sensor": "WIC",
     }
     if sensor == "WIC":
         camera.update({
@@ -80,11 +83,13 @@ def kp_series():
 
 
 def write_detector_pair(base, orbit=1, nonlinear=False):
-    precipitation_directory = base / "precipitation_detector" / "IR_hardy"
-    conductance_directory = (
-        base / "conductance_detector" / "IR_hardy" / "robinson"
+    precipitation_directory = (
+        base / "precipitation_detector" / RETRIEVAL_LABEL
     )
-    fuv_directory = base / "fuv_detector" / PREPROCESSING_LABEL
+    conductance_directory = (
+        base / "conductance_detector" / RETRIEVAL_LABEL / "robinson"
+    )
+    fuv_directory = base / "fuv_detector" / BS2D_PREPROCESSING_LABEL
     precipitation_directory.mkdir(parents=True, exist_ok=True)
     conductance_directory.mkdir(parents=True, exist_ok=True)
     fuv_directory.mkdir(parents=True, exist_ok=True)
@@ -96,9 +101,13 @@ def write_detector_pair(base, orbit=1, nonlinear=False):
     si13 = regular_camera("SI13", 4, 0.10, si_times, 20.0)
 
     fuv_filename = fuv_directory / f"or_{orbit:04d}.nc"
-    FUVDetector(wic, si12, si13, software_version="product1-test").to_nc(
-        fuv_filename
-    )
+    FUVDetector(
+        wic,
+        si12,
+        si13,
+        preprocessing_label=BS2D_PREPROCESSING_LABEL,
+        software_version="product1-test",
+    ).to_nc(fuv_filename)
     precipitation_filename = precipitation_directory / f"or_{orbit:04d}.nc"
     PrecipitationDetector(
         fuv_filename,
@@ -188,7 +197,6 @@ def test_paired_products_share_mapping_and_round_trip(tmp_path, monkeypatch):
 
     precipitation_output = tmp_path / "precipitation_cs.nc"
     conductance_output = tmp_path / "conductance_cs.nc"
-    conductance.companion_precipitation_cs = str(precipitation_output)
     precipitation.to_nc(precipitation_output)
     conductance.to_nc(conductance_output)
 
@@ -196,7 +204,7 @@ def test_paired_products_share_mapping_and_round_trip(tmp_path, monkeypatch):
         precipitation_output, precipitation_source
     ) == "complete"
     assert ORBIT_SCRIPT.conductance_cs_file_status(
-        conductance_output, conductance_source, precipitation_output
+        conductance_output, conductance_source
     ) == "complete"
     with Dataset(conductance_output) as nc:
         assert nc.product_type == "conductance_cs"
@@ -215,6 +223,8 @@ def test_paired_products_share_mapping_and_round_trip(tmp_path, monkeypatch):
         assert nc.si12_smoothing_applied == 0
         assert nc.si13_smoothing_applied == 1
         assert "geometric" in nc.method_quality_weight_spatial_propagation
+        assert nc.source_preprocessing_label == BS2D_PREPROCESSING_LABEL
+        assert "companion_precipitation_cs" not in nc.ncattrs()
     with Dataset(precipitation_output) as nc:
         assert nc.variables["si12"].shape == (2, 46, 46)
         assert nc.variables["dsi12"].shape == (2, 46, 46)
@@ -225,6 +235,7 @@ def test_paired_products_share_mapping_and_round_trip(tmp_path, monkeypatch):
         assert nc.si12_smoothing_width_pixels == 0
         assert nc.si13_smoothing_width_pixels == 1.2
         assert "geometric" in nc.method_quality_weight_spatial_propagation
+        assert nc.source_preprocessing_label == BS2D_PREPROCESSING_LABEL
 
 
 def test_paired_reduction_reads_each_detector_cube_once(tmp_path, monkeypatch):
@@ -249,6 +260,38 @@ def test_paired_reduction_reads_each_detector_cube_once(tmp_path, monkeypatch):
 
     assert reads
     assert max(reads.values()) == 1
+
+
+def test_combined_builder_uses_separate_mappings_when_geometry_differs(
+    tmp_path, monkeypatch
+):
+    precipitation_source, conductance_source = write_detector_pair(
+        tmp_path / "input"
+    )
+    with Dataset(conductance_source, "r+") as nc:
+        nc["mlat"][:] = nc["mlat"][:] + 0.01
+
+    calls = []
+    real_mapping = __import__(
+        "icbuilder.detectorcs", fromlist=["make_detector_cs_mapping"]
+    ).make_detector_cs_mapping
+
+    def count_mapping(*args, **kwargs):
+        calls.append(1)
+        return real_mapping(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "icbuilder.detectorcs.make_detector_cs_mapping", count_mapping
+    )
+    precipitation, conductance = build_detector_cs_products(
+        precipitation_source,
+        conductance_source,
+        software_version="cs-test",
+    )
+
+    assert precipitation.method_valid.any()
+    assert conductance.conductance_valid.any()
+    assert len(calls) == 4
 
 
 def test_quality_weight_reduction_is_independent_of_physical_validity(tmp_path):
@@ -302,11 +345,11 @@ def test_combined_orbit_runner_writes_and_restarts(tmp_path, monkeypatch):
 
     precipitation_output = (
         base_output / "precipitation_cs" / DETECTOR_CS_GRID_ID
-        / "IR_hardy" / "or_0001.nc"
+        / RETRIEVAL_LABEL / "or_0001.nc"
     )
     conductance_output = (
         base_output / "conductance_cs" / DETECTOR_CS_GRID_ID
-        / "IR_hardy" / "robinson" / "or_0001.nc"
+        / RETRIEVAL_LABEL / "robinson" / "or_0001.nc"
     )
     assert precipitation_output.is_file()
     assert conductance_output.is_file()
@@ -336,60 +379,70 @@ def test_precipitation_only_runner_does_not_require_conductance(
 
     precipitation_output = (
         base_output / "precipitation_cs" / DETECTOR_CS_GRID_ID
-        / "IR_hardy" / "or_0001.nc"
+        / RETRIEVAL_LABEL / "or_0001.nc"
     )
     assert precipitation_output.is_file()
     assert not (base_output / "conductance_cs").exists()
     assert ORBIT_SCRIPT.main(arguments) == []
 
 
-def test_conductance_only_runner_preserves_existing_precipitation(
+def test_conductance_only_runner_does_not_require_precipitation(
     tmp_path, monkeypatch
 ):
     base_input = tmp_path / "input"
     base_output = tmp_path / "output"
-    write_detector_pair(base_input)
+    precipitation_source, _ = write_detector_pair(base_input)
+    precipitation_source.unlink()
     monkeypatch.setattr(ORBIT_SCRIPT, "current_revision", lambda path: "test")
 
-    common = [
+    arguments = [
         "--base-input", str(base_input),
         "--base-output", str(base_output),
         "--orbit", "1",
+        "--conductance-only",
     ]
-    assert ORBIT_SCRIPT.main(common + ["--precipitation-only"]) == [(1, 2)]
-
-    precipitation_output = (
-        base_output / "precipitation_cs" / DETECTOR_CS_GRID_ID
-        / "IR_hardy" / "or_0001.nc"
-    )
-    precipitation_mtime = precipitation_output.stat().st_mtime_ns
-
-    arguments = common + ["--conductance-only"]
     assert ORBIT_SCRIPT.main(arguments) == [(1, 2)]
 
     conductance_output = (
         base_output / "conductance_cs" / DETECTOR_CS_GRID_ID
-        / "IR_hardy" / "robinson" / "or_0001.nc"
+        / RETRIEVAL_LABEL / "robinson" / "or_0001.nc"
     )
     assert conductance_output.is_file()
-    assert precipitation_output.stat().st_mtime_ns == precipitation_mtime
+    assert not (base_output / "precipitation_cs").exists()
     assert ORBIT_SCRIPT.main(arguments) == []
 
 
-def test_conductance_only_runner_requires_precipitation_cs(
-    tmp_path, monkeypatch
-):
+def test_combined_runner_processes_each_available_product(tmp_path, monkeypatch):
     base_input = tmp_path / "input"
-    write_detector_pair(base_input)
+    base_output = tmp_path / "output"
+    precipitation_1, conductance_1 = write_detector_pair(base_input, orbit=1)
+    precipitation_2, conductance_2 = write_detector_pair(base_input, orbit=2)
+    conductance_1.unlink()
+    precipitation_2.unlink()
     monkeypatch.setattr(ORBIT_SCRIPT, "current_revision", lambda path: "test")
 
-    with pytest.raises(ValueError, match="run --precipitation-only first"):
-        ORBIT_SCRIPT.main([
-            "--base-input", str(base_input),
-            "--base-output", str(tmp_path / "output"),
-            "--orbit", "1",
-            "--conductance-only",
-        ])
+    result = ORBIT_SCRIPT.main([
+        "--base-input", str(base_input),
+        "--base-output", str(base_output),
+    ])
+
+    assert result == [(1, 2), (2, 2)]
+    assert (
+        base_output / "precipitation_cs" / DETECTOR_CS_GRID_ID
+        / RETRIEVAL_LABEL / "or_0001.nc"
+    ).is_file()
+    assert not (
+        base_output / "conductance_cs" / DETECTOR_CS_GRID_ID
+        / RETRIEVAL_LABEL / "robinson" / "or_0001.nc"
+    ).exists()
+    assert (
+        base_output / "conductance_cs" / DETECTOR_CS_GRID_ID
+        / RETRIEVAL_LABEL / "robinson" / "or_0002.nc"
+    ).is_file()
+    assert not (
+        base_output / "precipitation_cs" / DETECTOR_CS_GRID_ID
+        / RETRIEVAL_LABEL / "or_0002.nc"
+    ).exists()
 
 
 def test_cs_runner_rejects_two_single_product_modes():
@@ -401,10 +454,11 @@ def test_cs_runner_rejects_two_single_product_modes():
 
 
 def test_combined_orbit_runner_parallel_routing(tmp_path, monkeypatch):
+    assert ORBIT_SCRIPT.parse_args([]).retrieval_label == RETRIEVAL_LABEL
     base_input = tmp_path / "input"
     for directory in (
-        base_input / "precipitation_detector" / "IR_hardy",
-        base_input / "conductance_detector" / "IR_hardy" / "robinson",
+        base_input / "precipitation_detector" / RETRIEVAL_LABEL,
+        base_input / "conductance_detector" / RETRIEVAL_LABEL / "robinson",
     ):
         directory.mkdir(parents=True)
         for orbit in (1, 2):
@@ -434,19 +488,20 @@ def test_combined_orbit_runner_parallel_routing(tmp_path, monkeypatch):
     assert [call[0][0] for call in calls] == [1, 2]
 
 
-def test_paired_builder_rejects_changed_product2(tmp_path):
+def test_combined_builder_does_not_require_product_identity_match(tmp_path):
     precipitation_source, conductance_source = write_detector_pair(
         tmp_path / "input"
     )
     with Dataset(precipitation_source, "r+") as nc:
         nc.audit_change = "changed after detector Product 3 was written"
 
-    with pytest.raises(ValueError, match="does not identify"):
-        build_detector_cs_products(
-            precipitation_source,
-            conductance_source,
-            software_version="cs-test",
-        )
+    precipitation, conductance = build_detector_cs_products(
+        precipitation_source,
+        conductance_source,
+        software_version="cs-test",
+    )
+    assert precipitation.method_valid.any()
+    assert conductance.conductance_valid.any()
 
 
 def test_combined_orbit_runner_rejects_invalid_worker_count():
@@ -477,9 +532,9 @@ def test_combined_orbit_runner_executes_two_real_workers(tmp_path):
     for orbit in (1, 2):
         assert (
             base_output / "precipitation_cs" / DETECTOR_CS_GRID_ID
-            / "IR_hardy" / f"or_{orbit:04d}.nc"
+            / RETRIEVAL_LABEL / f"or_{orbit:04d}.nc"
         ).is_file()
         assert (
             base_output / "conductance_cs" / DETECTOR_CS_GRID_ID
-            / "IR_hardy" / "robinson" / f"or_{orbit:04d}.nc"
+            / RETRIEVAL_LABEL / "robinson" / f"or_{orbit:04d}.nc"
         ).is_file()

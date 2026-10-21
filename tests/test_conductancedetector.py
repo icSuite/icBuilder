@@ -16,7 +16,10 @@ from icbuilder.conductancedetector import (
     SCHEMA_VERSION,
     ConductanceDetector,
 )
-from icbuilder.fuvdetector import SOURCE_TIME_DECODING
+from icbuilder.fuvdetector import (
+    BS2D_PREPROCESSING_LABEL,
+    SOURCE_TIME_DECODING,
+)
 from icbuilder.precipitationdetector import (
     COUNT_UNCERTAINTY_MODE,
     PRECIPITATION_METHOD,
@@ -75,7 +78,7 @@ def write_precipitation_detector(path, proton_energy_model="hardy"):
         nc.method_quality_weight_spatial_propagation = "geometric test product"
         nc.source_fuv_detector = "fuv_detector/or_0001.nc"
         nc.source_fuv_detector_sha256 = "source-fuv-sha256"
-        nc.source_preprocessing_label = "fuvpy_bs_directional_v1"
+        nc.source_preprocessing_label = BS2D_PREPROCESSING_LABEL
         nc.source_fuv_detector_time_decoding = SOURCE_TIME_DECODING
         nc.coordinate_system = "Modified Apex"
         nc.reference_height_km = 130.0
@@ -189,6 +192,8 @@ def test_detector_conductance_matches_icphysics_and_keeps_central_values(
     np.testing.assert_allclose(product.dP, expected["dP"], equal_nan=True)
     np.testing.assert_allclose(product.dH, expected["dH"], equal_nan=True)
     np.testing.assert_array_equal(product.conductance_valid, method_valid)
+    np.testing.assert_allclose(product.glat, 70.0)
+    assert product.source_preprocessing_label == BS2D_PREPROCESSING_LABEL
     np.testing.assert_array_equal(
         product.conductance_uncertainty_valid,
         np.array([[[True, True], [False, False]]]),
@@ -237,6 +242,7 @@ def test_detector_conductance_netcdf_is_self_describing(tmp_path):
         )
         assert nc.count_uncertainty_mode == COUNT_UNCERTAINTY_MODE
         assert nc.source_precipitation_software_version == "product2-test"
+        assert nc.source_preprocessing_label == BS2D_PREPROCESSING_LABEL
         assert nc.software_version == "product3-test"
         assert "one-sided" in nc.conductance_uncertainty_method
         assert nc.variables["P"].units == "S"
@@ -289,7 +295,10 @@ def test_orbit_script_writes_and_restarts_with_separate_bases(
 ):
     base_input = tmp_path / "input"
     base_output = tmp_path / "output"
-    input_directory = base_input / "precipitation_detector" / "IR_hardy"
+    input_directory = (
+        base_input / "precipitation_detector"
+        / ORBIT_SCRIPT.DEFAULT_RETRIEVAL_LABEL
+    )
     input_directory.mkdir(parents=True)
     write_precipitation_detector(input_directory / "or_0001.nc")
     monkeypatch.setattr(ORBIT_SCRIPT, "current_revision", lambda path: "test")
@@ -302,7 +311,8 @@ def test_orbit_script_writes_and_restarts_with_separate_bases(
     assert ORBIT_SCRIPT.main(arguments) == [(1, 1)]
 
     output = (
-        base_output / "conductance_detector" / "IR_hardy" / "robinson"
+        base_output / "conductance_detector"
+        / ORBIT_SCRIPT.DEFAULT_RETRIEVAL_LABEL / "robinson"
         / "or_0001.nc"
     )
     assert output.is_file()
@@ -311,14 +321,17 @@ def test_orbit_script_writes_and_restarts_with_separate_bases(
 
 def test_orbit_script_defaults_and_parallel_routing(tmp_path, monkeypatch):
     defaults = ORBIT_SCRIPT.parse_args([])
-    assert defaults.retrieval_label == "IR_hardy"
+    assert defaults.retrieval_label == ORBIT_SCRIPT.DEFAULT_RETRIEVAL_LABEL
     assert defaults.conductance_model == "robinson"
     assert defaults.workers == 1
     assert defaults.base_output is None
 
     base_input = tmp_path / "input"
     base_output = tmp_path / "output"
-    input_directory = base_input / "precipitation_detector" / "IR_hardy"
+    input_directory = (
+        base_input / "precipitation_detector"
+        / ORBIT_SCRIPT.DEFAULT_RETRIEVAL_LABEL
+    )
     input_directory.mkdir(parents=True)
     for orbit in (1, 2):
         (input_directory / f"or_{orbit:04d}.nc").touch()
@@ -349,7 +362,8 @@ def test_orbit_script_defaults_and_parallel_routing(tmp_path, monkeypatch):
     for _, settings in calls:
         assert settings["input_directory"] == input_directory
         assert settings["output_directory"] == (
-            base_output / "conductance_detector" / "IR_hardy" / "robinson"
+            base_output / "conductance_detector"
+            / ORBIT_SCRIPT.DEFAULT_RETRIEVAL_LABEL / "robinson"
         )
 
 

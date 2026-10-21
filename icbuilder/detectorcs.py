@@ -2,8 +2,6 @@
 
 #%% Imports
 
-from pathlib import Path
-
 import numpy as np
 from icreader import open_product
 from netCDF4 import date2num
@@ -245,28 +243,19 @@ def write_common_cs_coordinates(nc, product):
         variable.units = units
 
 
-def validate_detector_pair(precipitation, conductance, precipitation_identity):
-    """Require Product 2 and Product 3 to describe the same detector orbit."""
+def _make_orbit_mappings(mlat, mlt, grid):
+    """Build the detector-footprint mappings needed by one CS product."""
 
-    if precipitation.shape != conductance.shape:
-        raise ValueError("detector Product 2 and Product 3 shapes do not match")
-    if (
-        conductance.source_precipitation_detector_sha256
-        != precipitation_identity["source_sha256"]
-    ):
-        raise ValueError("Product 3 does not identify the selected Product 2")
-
-    for name in TIME_FIELDS:
-        first = np.asarray(getattr(precipitation, name), dtype=object)
-        second = np.asarray(getattr(conductance, name), dtype=object)
-        if not np.array_equal(first, second):
-            raise ValueError(f"detector Product 2 and Product 3 {name} differ")
-        if dict(precipitation.time_encoding[name]) != dict(
-            conductance.time_encoding[name]
-        ):
-            raise ValueError(
-                f"detector Product 2 and Product 3 {name} encodings differ"
-            )
+    mappings = []
+    cell_area = None
+    for frame in range(mlat.shape[0]):
+        mapping, frame_cell_area = make_detector_cs_mapping(
+            mlat[frame], mlt[frame], grid
+        )
+        mappings.append(mapping)
+        if cell_area is None:
+            cell_area = frame_cell_area
+    return mappings, cell_area
 
 
 def build_detector_cs_products(
@@ -275,7 +264,7 @@ def build_detector_cs_products(
     *,
     software_version="unrecorded experimental worktree",
 ):
-    """Reduce paired detector Products 2 and 3 with one mapping per frame."""
+    """Reduce both independent CS products, sharing mappings when possible."""
 
     from .conductancecs import ConductanceCS
     from .grids import make_detector_cs_grid
@@ -295,50 +284,49 @@ def build_detector_cs_products(
             grid=grid,
             software_version=software_version,
         )
-        validate_detector_pair(
-            precipitation,
-            conductance,
-            precipitation_product.source_identity,
-        )
         precipitation_mlat = np.asarray(
             precipitation.read("mlat"), dtype=float
         )
         conductance_mlat = np.asarray(
             conductance.read("mlat"), dtype=float
         )
-        if not np.array_equal(
-            precipitation_mlat, conductance_mlat, equal_nan=True
-        ):
-            raise ValueError("detector Product 2 and Product 3 MLAT differ")
-        del conductance_mlat
-
         precipitation_mlt = np.asarray(
             precipitation.read("mlt"), dtype=float
         )
         conductance_mlt = np.asarray(
             conductance.read("mlt"), dtype=float
         )
-        if not np.array_equal(
-            precipitation_mlt, conductance_mlt, equal_nan=True
-        ):
-            raise ValueError("detector Product 2 and Product 3 MLT differ")
-        del conductance_mlt
-
-        mappings = []
-        cell_area = None
-        for frame in range(precipitation_product.shape[0]):
-            mapping, frame_cell_area = make_detector_cs_mapping(
-                precipitation_mlat[frame],
-                precipitation_mlt[frame],
-                grid,
+        shared_geometry = (
+            precipitation_mlat.shape == conductance_mlat.shape
+            and np.array_equal(
+                precipitation_mlat, conductance_mlat, equal_nan=True
             )
-            mappings.append(mapping)
-            if cell_area is None:
-                cell_area = frame_cell_area
-        del precipitation_mlat, precipitation_mlt
+            and np.array_equal(
+                precipitation_mlt, conductance_mlt, equal_nan=True
+            )
+        )
 
-        precipitation_product.reduce(precipitation, mappings, cell_area)
-        conductance_product.reduce(conductance, mappings, cell_area)
+        precipitation_mappings, precipitation_cell_area = (
+            _make_orbit_mappings(precipitation_mlat, precipitation_mlt, grid)
+        )
+        if shared_geometry:
+            conductance_mappings = precipitation_mappings
+            conductance_cell_area = precipitation_cell_area
+        else:
+            conductance_mappings, conductance_cell_area = (
+                _make_orbit_mappings(conductance_mlat, conductance_mlt, grid)
+            )
+
+        precipitation_product.reduce(
+            precipitation,
+            precipitation_mappings,
+            precipitation_cell_area,
+        )
+        conductance_product.reduce(
+            conductance,
+            conductance_mappings,
+            conductance_cell_area,
+        )
 
     return precipitation_product, conductance_product
 
@@ -363,17 +351,7 @@ def build_precipitation_cs_product(
         mlat = np.asarray(precipitation.read("mlat"), dtype=float)
         mlt = np.asarray(precipitation.read("mlt"), dtype=float)
 
-        mappings = []
-        cell_area = None
-        for frame in range(product.shape[0]):
-            mapping, frame_cell_area = make_detector_cs_mapping(
-                mlat[frame],
-                mlt[frame],
-                grid,
-            )
-            mappings.append(mapping)
-            if cell_area is None:
-                cell_area = frame_cell_area
+        mappings, cell_area = _make_orbit_mappings(mlat, mlt, grid)
 
         product.reduce(precipitation, mappings, cell_area)
 
@@ -381,67 +359,25 @@ def build_precipitation_cs_product(
 
 
 def build_conductance_cs_product(
-    precipitation_filename,
     conductance_filename,
     *,
     software_version="unrecorded experimental worktree",
 ):
-    """Reduce Product 3 while validating its detector Product-2 source."""
+    """Reduce one detector Product 3 without requiring detector Product 2."""
 
     from .conductancecs import ConductanceCS
-    from .fuvdetector import source_identity
     from .grids import make_detector_cs_grid
 
     grid = make_detector_cs_grid()
-    with open_product(precipitation_filename) as precipitation, open_product(
-        conductance_filename
-    ) as conductance:
+    with open_product(conductance_filename) as conductance:
         product = ConductanceCS(
             conductance,
             grid=grid,
             software_version=software_version,
         )
-        validate_detector_pair(
-            precipitation,
-            conductance,
-            source_identity(Path(precipitation_filename)),
-        )
-
-        precipitation_mlat = np.asarray(
-            precipitation.read("mlat"), dtype=float
-        )
-        conductance_mlat = np.asarray(
-            conductance.read("mlat"), dtype=float
-        )
-        if not np.array_equal(
-            precipitation_mlat, conductance_mlat, equal_nan=True
-        ):
-            raise ValueError("detector Product 2 and Product 3 MLAT differ")
-        del precipitation_mlat
-
-        precipitation_mlt = np.asarray(
-            precipitation.read("mlt"), dtype=float
-        )
-        conductance_mlt = np.asarray(
-            conductance.read("mlt"), dtype=float
-        )
-        if not np.array_equal(
-            precipitation_mlt, conductance_mlt, equal_nan=True
-        ):
-            raise ValueError("detector Product 2 and Product 3 MLT differ")
-        del precipitation_mlt
-
-        mappings = []
-        cell_area = None
-        for frame in range(product.shape[0]):
-            mapping, frame_cell_area = make_detector_cs_mapping(
-                conductance_mlat[frame],
-                conductance_mlt[frame],
-                grid,
-            )
-            mappings.append(mapping)
-            if cell_area is None:
-                cell_area = frame_cell_area
+        mlat = np.asarray(conductance.read("mlat"), dtype=float)
+        mlt = np.asarray(conductance.read("mlt"), dtype=float)
+        mappings, cell_area = _make_orbit_mappings(mlat, mlt, grid)
 
         product.reduce(conductance, mappings, cell_area)
 

@@ -11,7 +11,11 @@ import pytest
 from icphysics import hardy_ion_precipitation
 from netCDF4 import Dataset
 
-from icbuilder.fuvdetector import FUVDetector, PREPROCESSING_LABEL
+from icbuilder.fuvdetector import (
+    BS2D_PREPROCESSING_LABEL,
+    FUVDetector,
+    PREPROCESSING_LABEL,
+)
 from icbuilder.precipitationdetector import (
     COUNT_UNCERTAINTY_MODE,
     QUALITY_WEIGHT_FLOOR,
@@ -83,7 +87,9 @@ def kp_series():
     }
 
 
-def write_fuv_detector(path, two_frames=False):
+def write_fuv_detector(
+    path, two_frames=False, preprocessing_label=PREPROCESSING_LABEL
+):
     wic_times = [BASE_TIME]
     si_times = [BASE_TIME + timedelta(seconds=1)]
     if two_frames:
@@ -95,7 +101,16 @@ def write_fuv_detector(path, two_frames=False):
     si13 = regular_camera(
         "SI13", 4, 0.10, [BASE_TIME + timedelta(seconds=1)], 20.0
     )
-    product = FUVDetector(wic, si12, si13, software_version="product1-test")
+    if preprocessing_label == BS2D_PREPROCESSING_LABEL:
+        for camera in (wic, si12, si13):
+            camera["image_field"] = "dgimg_independent"
+            camera["pointing_correction_method"] = "position"
+            camera["pointing_reference_sensor"] = "WIC"
+    product = FUVDetector(
+        wic, si12, si13,
+        preprocessing_label=preprocessing_label,
+        software_version="product1-test"
+    )
     product.to_nc(path)
     return product
 
@@ -140,6 +155,23 @@ def test_image_ratio_runs_on_product1_detector_geometry(tmp_path):
         precipitation.method_quality_weight[precipitation.method_valid],
         expected_weight[precipitation.method_valid],
     )
+
+
+def test_image_ratio_accepts_position_corrected_independent_product1(tmp_path):
+    source = tmp_path / "fuv_detector_2d.nc"
+    write_fuv_detector(
+        source, preprocessing_label=BS2D_PREPROCESSING_LABEL
+    )
+
+    precipitation = PrecipitationDetector(
+        source,
+        kp_series=kp_series(),
+        proton_energy_model="constant",
+        proton_energy=2.0
+    )
+
+    assert precipitation.source_preprocessing_label == BS2D_PREPROCESSING_LABEL
+    assert precipitation.method_valid.any()
 
 
 def test_unsubtracted_counts_use_common_support_without_dgweight(tmp_path):
@@ -625,10 +657,13 @@ def test_precipitation_detector_netcdf_is_self_describing(tmp_path):
 
 def test_orbit_script_writes_and_restarts_from_product_file(tmp_path, monkeypatch):
     input_directory = (
-        tmp_path / "fuv_detector" / PREPROCESSING_LABEL
+        tmp_path / "fuv_detector" / BS2D_PREPROCESSING_LABEL
     )
     input_directory.mkdir(parents=True)
-    write_fuv_detector(input_directory / "or_0001.nc")
+    write_fuv_detector(
+        input_directory / "or_0001.nc",
+        preprocessing_label=BS2D_PREPROCESSING_LABEL
+    )
     monkeypatch.setattr(ORBIT_SCRIPT, "load_gfz_kp", kp_series)
 
     arguments = [
@@ -659,6 +694,7 @@ def test_orbit_script_defaults_to_hardy_image_ratio():
     assert args.si13_smoothing_width == 1.2
     assert args.workers == 1
     assert args.base_output is None
+    assert args.input_folder == f"fuv_detector/{BS2D_PREPROCESSING_LABEL}"
     assert ORBIT_SCRIPT.PRECIPITATION_METHOD == "image_ratio"
 
 
@@ -668,7 +704,7 @@ def test_orbit_script_supports_separate_bases_and_parallel_runs(
     base_input = tmp_path / "input"
     base_output = tmp_path / "output"
     input_directory = (
-        base_input / "fuv_detector" / PREPROCESSING_LABEL
+        base_input / "fuv_detector" / BS2D_PREPROCESSING_LABEL
     )
     input_directory.mkdir(parents=True)
     for orbit in (1, 2):

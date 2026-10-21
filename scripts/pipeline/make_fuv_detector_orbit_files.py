@@ -12,11 +12,13 @@ from pathlib import Path
 
 import numpy as np
 from icreader import open_product
+from netCDF4 import Dataset
 from tqdm import tqdm
 from tqdm.contrib.concurrent import process_map
 
 from icbuilder.fuvdetector import (
     BS2D_IMAGE_FIELDS,
+    BS2D_POINTING_METHODS,
     BS2D_PREPROCESSING_LABEL,
     IMAGE_FIELDS,
     PREPROCESSING_LABEL,
@@ -44,20 +46,62 @@ def validate_label(label):
         )
     return label
 
-def source_paths(base, orbit, wic_folder, si12_folder, si13_folder):
-    """Resolve one WIC-led orbit and optional SI source files."""
+def load_successful_orbits(base):
+    """Read the completed native run's per-sensor success arrays."""
+
+    successful = {}
+    filenames = {
+        "wic": "wic_avail_orbit.npy",
+        "si12": "s12_avail_orbit.npy",
+        "si13": "s13_avail_orbit.npy",
+    }
+    for sensor, name in filenames.items():
+        filename = base / name
+        if not filename.is_file():
+            raise FileNotFoundError(
+                f"{filename} is missing; finish the native orbit run first"
+            )
+        status = np.load(filename, allow_pickle=False)
+        if status.ndim != 2 or status.shape[1] != 2:
+            raise ValueError(f"{filename} must contain orbit/status pairs")
+        successful[sensor] = set(status[status[:, 1] == 1, 0].astype(int))
+    return successful
+
+
+def source_paths(
+    base, orbit, successful_orbits, wic_folder, si12_folder, si13_folder
+):
+    """Resolve sources marked successful by the completed native run."""
 
     paths = {
         "wic": base / wic_folder / f"wic_or{orbit:04d}.nc",
         "si12": base / si12_folder / f"s12_or{orbit:04d}.nc",
         "si13": base / si13_folder / f"s13_or{orbit:04d}.nc",
     }
-    if not paths["wic"].is_file():
-        raise FileNotFoundError(paths["wic"])
+    if orbit not in successful_orbits["wic"]:
+        raise ValueError(f"WIC orbit {orbit} is not marked successful")
     for sensor in ("si12", "si13"):
-        if not paths[sensor].is_file():
+        if orbit not in successful_orbits[sensor]:
             paths[sensor] = None
+    for filename in paths.values():
+        if filename is not None and not filename.is_file():
+            raise FileNotFoundError(filename)
     return paths
+
+
+def source_pointing_method(source_files):
+    """Read and cross-check the shared pointing method in native 2D files."""
+
+    methods = set()
+    for filename in source_files.values():
+        if filename is None:
+            continue
+        with Dataset(filename) as source:
+            methods.add(getattr(source, "pointing_correction_method", ""))
+    if len(methods) != 1 or not methods.issubset(BS2D_POINTING_METHODS):
+        raise ValueError("native sensor files must use one supported pointing method")
+    return next(iter(methods))
+
 
 def current_software_version(repository):
     """Describe Git plus the exact Product-1 implementation source."""
@@ -101,6 +145,7 @@ def fuv_detector_file_status(
     preprocessing_label,
     source_files,
     time_tolerance_seconds=TIME_TOLERANCE_SECONDS,
+    pointing_method=None,
 ):
     """Return missing, invalid, mismatch, or complete for one Product-1 file."""
 
@@ -132,12 +177,16 @@ def fuv_detector_file_status(
             image_fields = IMAGE_FIELDS
             if preprocessing_label == BS2D_PREPROCESSING_LABEL:
                 image_fields = BS2D_IMAGE_FIELDS
+                if pointing_method is None:
+                    pointing_method = product.attrs.get("pointing_correction_method")
                 expected = {
                     "background_fit_stage": "independent",
                     "dgsigma_freeze_iteration": 2,
-                    "pointing_correction_method": "clock_phase",
+                    "pointing_correction_method": pointing_method,
                     "pointing_reference_sensor": "WIC"
                 }
+                if pointing_method not in BS2D_POINTING_METHODS:
+                    return "mismatch"
                 for name, value in expected.items():
                     if product.attrs.get(name) != value:
                         return "mismatch"
@@ -198,6 +247,7 @@ def save_fuv_detector_file(product, filename, source_files):
             product.preprocessing_label,
             source_files,
             product.time_tolerance_seconds,
+            product.pointing_correction_method,
         )
         if status != "complete":
             raise RuntimeError(f"incomplete fuv_detector file: {partial}")
@@ -209,23 +259,13 @@ def save_fuv_detector_file(product, filename, source_files):
 
 #%% Orbit processing
 
-def get_orbits(wic_directory):
-    """Discover orbit numbers from WIC source NetCDF files."""
-
-    orbits = []
-    for filename in sorted(wic_directory.glob("wic_or*.nc")):
-        orbit_text = filename.stem[-4:]
-        if orbit_text.isdigit():
-            orbits.append(int(orbit_text))
-    return np.unique(orbits)
-
-
 def process_orbit(
     orbit,
     base,
     output_directory,
     preprocessing_label,
     software_version,
+    successful_orbits,
     wic_folder="wic",
     si12_folder="s12",
     si13_folder="s13",
@@ -233,7 +273,7 @@ def process_orbit(
     """Coregister one WIC-led orbit and publish its detector Product 1."""
 
     paths = source_paths(
-        base, orbit, wic_folder, si12_folder, si13_folder
+        base, orbit, successful_orbits, wic_folder, si12_folder, si13_folder
     )
     try:
         product = FUVDetector.from_files(
@@ -285,7 +325,10 @@ def parse_args(argv=None):
         "--workers", type=int, default=1,
         help="Number of orbit workers; 1 runs serially (default: 1).",
     )
-    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--overwrite", action="store_true",
+        help="Rebuild existing Product 1 files after native inputs were regenerated."
+    )
     return parser.parse_args(argv)
 
 
@@ -303,7 +346,8 @@ def main(argv=None):
     output_directory = base_output / args.output_folder / label
     output_directory.mkdir(parents=True, exist_ok=True)
 
-    available = get_orbits(base_input / args.wic_folder)
+    successful_orbits = load_successful_orbits(base_input)
+    available = np.asarray(sorted(successful_orbits["wic"]), dtype=int)
     if args.orbit is None:
         selected = available
     else:
@@ -319,6 +363,7 @@ def main(argv=None):
         paths = source_paths(
             base_input,
             int(orbit),
+            successful_orbits,
             args.wic_folder,
             args.s12_folder,
             args.s13_folder,
@@ -327,10 +372,14 @@ def main(argv=None):
         if args.overwrite:
             pending.append(int(orbit))
             continue
+        pointing_method = None
+        if label == BS2D_PREPROCESSING_LABEL and output_file.is_file():
+            pointing_method = source_pointing_method(paths)
         status = fuv_detector_file_status(
             output_file,
             label,
             paths,
+            pointing_method=pointing_method,
         )
         if status == "mismatch":
             raise ValueError(
@@ -351,6 +400,7 @@ def main(argv=None):
         output_directory=output_directory,
         preprocessing_label=label,
         software_version=software_version,
+        successful_orbits=successful_orbits,
         wic_folder=args.wic_folder,
         si12_folder=args.s12_folder,
         si13_folder=args.s13_folder,
