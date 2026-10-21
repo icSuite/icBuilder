@@ -116,23 +116,37 @@ def shifted_limb(record, point, normal, parameters):
 #%% Bright-edge measurement
 
 def edge_samples(record, solar_max_deg):
+    """Measure the bright edge in the common 256-coordinate optical grid.
+
+    WIC stores that grid directly. SI13 stores 128 by 128 native pixels, with
+    each native pixel spanning two optical-grid coordinates in both axes.
+    FUVVIEW3 camera geometry and ``ANGL_RES_*`` use the optical grid, so image
+    and geometry sampling must convert between the two coordinate systems.
+    """
     point, normal, _ = tangent_limb(record)
     image = np.asarray(record['IMAGE'], dtype=float)
-    smooth = gaussian_filter(image, 2)
+    optical_per_native = np.array([256/image.shape[1], 256/image.shape[0]])
+    native_step = normal/optical_per_native
+    native_direction = native_step/np.linalg.norm(native_step, axis=1, keepdims=True)
+    optical_shape = np.array(image.shape[::-1])*optical_per_native
+
+    smooth = gaussian_filter(image, sigma=(2/optical_per_native[1], 2/optical_per_native[0]))
     gy, gx = np.gradient(smooth)
     scale = max(float(np.nanpercentile(image, 95)), 1)
     rows = []
-    for p, n in zip(point, normal):
+    for p, n, step, direction in zip(point, normal, native_step, native_direction):
         inside = p+8*n
-        if not np.all((p > 3) & (p < 252)) or not np.all((inside > 2) & (inside < 253)):
+        if not np.all((p > 3) & (p < optical_shape-4)) or not np.all((inside > 2) & (inside < optical_shape-3)):
             continue
-        solar = map_coordinates(np.asarray(record['SZA'], dtype=float), [[inside[1]], [inside[0]]], order=1, mode='nearest')[0]
+        inside_native = inside/optical_per_native
+        solar = map_coordinates(np.asarray(record['SZA'], dtype=float), [[inside_native[1]], [inside_native[0]]], order=1, mode='nearest')[0]
         if not 0 <= solar < 90:
             continue
         profile = p[None, :] + PROFILE_DISTANCE_PX[:, None]*n[None, :]
-        visible = np.all((profile > 2) & (profile < 253), axis=1)
-        coordinates = np.array([profile[:, 1], profile[:, 0]])
-        derivative = n[0]*map_coordinates(gx, coordinates, order=1, mode='nearest') + n[1]*map_coordinates(gy, coordinates, order=1, mode='nearest')
+        visible = np.all((profile > 2) & (profile < optical_shape-3), axis=1)
+        native_profile = profile/optical_per_native
+        coordinates = np.array([native_profile[:, 1], native_profile[:, 0]])
+        derivative = step[0]*map_coordinates(gx, coordinates, order=1, mode='nearest') + step[1]*map_coordinates(gy, coordinates, order=1, mode='nearest')
         candidates = np.flatnonzero(visible)
         if len(candidates) < 20:
             continue
@@ -146,11 +160,12 @@ def edge_samples(record, solar_max_deg):
             continue
         offset = PROFILE_DISTANCE_PX[peak]+.25*correction
         observed = p+offset*n
-        dx = map_coordinates(gx, [[observed[1]], [observed[0]]], order=1, mode='nearest')[0]
-        dy = map_coordinates(gy, [[observed[1]], [observed[0]]], order=1, mode='nearest')[0]
-        gradient = dx*n[0]+dy*n[1]
-        alignment = gradient/max(np.hypot(dx, dy), np.finfo(float).eps)
-        sample = lambda distance: map_coordinates(smooth, [[observed[1]+distance*n[1]], [observed[0]+distance*n[0]]], order=1, mode='nearest')[0]
+        observed_native = observed/optical_per_native
+        dx = map_coordinates(gx, [[observed_native[1]], [observed_native[0]]], order=1, mode='nearest')[0]
+        dy = map_coordinates(gy, [[observed_native[1]], [observed_native[0]]], order=1, mode='nearest')[0]
+        gradient = dx*step[0]+dy*step[1]
+        alignment = (dx*direction[0]+dy*direction[1])/max(np.hypot(dx, dy), np.finfo(float).eps)
+        sample = lambda distance: map_coordinates(smooth, [[observed_native[1]+distance*step[1]], [observed_native[0]+distance*step[0]]], order=1, mode='nearest')[0]
         inside_counts = np.mean([sample(distance) for distance in [3, 5, 7]])
         outside_counts = np.mean([sample(distance) for distance in [-7, -5, -3]])
         normal_angle = np.rad2deg(np.arctan2(-n[0], n[1]))
