@@ -8,14 +8,17 @@ import numpy as np
 from icreader import open_product
 from icphysics import (
     PROTON_RESPONSE_ENERGY_RANGE,
+    DEFAULT_HARDY_EFFECTIVE_MLAT_STEP_DEGREES,
+    DEFAULT_HARDY_EFFECTIVE_MLT_STEP_HOURS,
+    HARDY_CONDUCTANCE_COEFFICIENT_VERSION,
+    HARDY_CONDUCTANCE_KP_POLICY,
+    HARDY_CONDUCTANCE_MODEL_DOI,
+    HARDY_EFFECTIVE_METHOD,
     hardy_ion_precipitation,
     precipitation_from_ratio,
-    precipitation_from_hardy,
+    precipitation_from_collapsed_hardy_effective,
+    precipitation_from_hardy_effective,
     ELECTRON_RESPONSE_ENERGY_RANGE,
-    HARDY_ELECTRON_MODEL_DOI,
-    HARDY_ELECTRON_COEFFICIENT_VERSION,
-    HARDY_ELECTRON_KP_POLICY,
-    HARDY_ELECTRON_UNCERTAINTY_METHOD,
     proton_correct_images,
 )
 from netCDF4 import Dataset, date2num
@@ -51,12 +54,15 @@ PREPROCESSING_METADATA_ATTRIBUTES = (
 )
 PRECIPITATION_METHOD = "image_ratio"
 PRECIPITATION_METHODS = ("image_ratio", "hardy")
+DEFAULT_HARDY_ELECTRON_ENERGY_MODEL = "effective"
+HARDY_ELECTRON_ENERGY_MODELS = ("effective", "collapsed_effective")
 
 # These optional attributes travel with Hardy energy through all representations.
 ELECTRON_METADATA_ATTRIBUTES = (
     "electron_energy_model", "electron_energy_source",
     "electron_coefficient_source", "electron_kp_policy", "electron_model_domain",
     "electron_energy_coordinate_note", "electron_energy_uncertainty_method",
+    "electron_energy_derivation", "electron_energy_collapse",
     "electron_response_energy_min", "electron_response_energy_max",
     "electron_response_out_of_range_policy"
 )
@@ -66,17 +72,44 @@ HARDY_UNSUBTRACTED_QUALITY_WEIGHT_METHOD = (
 )
 
 
-def hardy_electron_metadata(coordinate_note):
-    """Scientific provenance for the fixed-energy WIC retrieval."""
+def hardy_electron_metadata(energy_model, coordinate_note):
+    """Scientific provenance for one effective-Hardy WIC retrieval."""
+
+    if energy_model not in HARDY_ELECTRON_ENERGY_MODELS:
+        raise ValueError(
+            f"hardy electron energy model must be one of "
+            f"{HARDY_ELECTRON_ENERGY_MODELS}"
+        )
+
+    if energy_model == "effective":
+        model_name = "hardy_robinson_effective"
+        collapse = "none; retain the native Kp/MLT/MLAT conductance model"
+    else:
+        model_name = "hardy_robinson_effective_collapsed"
+        collapse = (
+            "spherical-area average native Hall and Pedersen over the "
+            "contiguous background-screened auroral interval, then invert "
+            f"Robinson; MLAT 50–90 degrees at "
+            f"{DEFAULT_HARDY_EFFECTIVE_MLAT_STEP_DEGREES:g}-degree spacing; "
+            f"periodic MLT interpolation at "
+            f"{DEFAULT_HARDY_EFFECTIVE_MLT_STEP_HOURS:g}-hour spacing"
+        )
 
     return {
-        "electron_energy_model": "hardy",
-        "electron_energy_source": HARDY_ELECTRON_MODEL_DOI,
-        "electron_coefficient_source": HARDY_ELECTRON_COEFFICIENT_VERSION,
-        "electron_kp_policy": HARDY_ELECTRON_KP_POLICY,
-        "electron_model_domain": "northern corrected geomagnetic latitude 50–90 degrees",
+        "electron_energy_model": model_name,
+        "electron_energy_source": HARDY_CONDUCTANCE_MODEL_DOI,
+        "electron_coefficient_source": HARDY_CONDUCTANCE_COEFFICIENT_VERSION,
+        "electron_kp_policy": HARDY_CONDUCTANCE_KP_POLICY,
+        "electron_model_domain": (
+            "northern corrected geomagnetic latitude 50–90 degrees"
+        ),
         "electron_energy_coordinate_note": coordinate_note,
-        "electron_energy_uncertainty_method": HARDY_ELECTRON_UNCERTAINTY_METHOD,
+        "electron_energy_uncertainty_method": (
+            "not modelled; dE0=0 and varE0Fe=0 are conditional on the fixed "
+            "Hardy effective-energy model"
+        ),
+        "electron_energy_derivation": HARDY_EFFECTIVE_METHOD,
+        "electron_energy_collapse": collapse,
         "electron_response_energy_min": ELECTRON_RESPONSE_ENERGY_RANGE[0],
         "electron_response_energy_max": ELECTRON_RESPONSE_ENERGY_RANGE[1],
         "electron_response_out_of_range_policy": (
@@ -107,6 +140,11 @@ COUNT_UNCERTAINTY_METHOD = (
 HARDY_COORDINATE_NOTE = (
     "Hardy corrected geomagnetic coordinates approximated by Product-1 "
     "Modified Apex latitude and MLT at 130 km"
+)
+COLLAPSED_HARDY_COORDINATE_NOTE = (
+    "Hardy latitude profile is collapsed internally in corrected geomagnetic "
+    "coordinates; Product-1 Modified Apex MLT at 130 km approximates the "
+    "source magnetic local time"
 )
 SPATIAL_SMOOTHING_ORDER = (
     "enabled sensors are Gaussian-smoothed independently on their Product-1 "
@@ -448,6 +486,7 @@ class PrecipitationDetector:
         *,
         kp_series=None,
         method=PRECIPITATION_METHOD,
+        hardy_electron_energy_model=DEFAULT_HARDY_ELECTRON_ENERGY_MODEL,
         proton_energy_model="hardy",
         proton_energy=2.0,
         proton_energy_uncertainty=0.0,
@@ -474,7 +513,20 @@ class PrecipitationDetector:
         self.schema_version = SCHEMA_VERSION
         self.method = method
         if method == "hardy":
-            for name, value in hardy_electron_metadata(HARDY_COORDINATE_NOTE).items():
+            if hardy_electron_energy_model not in HARDY_ELECTRON_ENERGY_MODELS:
+                raise ValueError(
+                    f"hardy_electron_energy_model must be one of "
+                    f"{HARDY_ELECTRON_ENERGY_MODELS}"
+                )
+            self.hardy_electron_energy_model = hardy_electron_energy_model
+            coordinate_note = (
+                HARDY_COORDINATE_NOTE
+                if hardy_electron_energy_model == "effective"
+                else COLLAPSED_HARDY_COORDINATE_NOTE
+            )
+            for name, value in hardy_electron_metadata(
+                hardy_electron_energy_model, coordinate_note
+            ).items():
                 setattr(self, name, value)
         self.count_source = count_source
         self.proton_flux_source = PROTON_FLUX_SOURCE
@@ -697,10 +749,16 @@ class PrecipitationDetector:
                 self.si13_corrected, dsi13_for_ratio
             )
         else:
-            result = precipitation_from_hardy(
-                self.wic_corrected, self.dwic_corrected,
-                self.kp[:, None, None], self.mlt, self.mlat
-            )
+            if self.hardy_electron_energy_model == "effective":
+                result = precipitation_from_hardy_effective(
+                    self.wic_corrected, self.dwic_corrected,
+                    self.kp[:, None, None], self.mlt, self.mlat
+                )
+            else:
+                result = precipitation_from_collapsed_hardy_effective(
+                    self.wic_corrected, self.dwic_corrected,
+                    self.kp[:, None, None], self.mlt
+                )
             # Keep the observed camera ratio as an optional diagnostic.
             with np.errstate(divide="ignore", invalid="ignore"):
                 self.R = self.wic_corrected / self.si13_corrected
@@ -790,6 +848,9 @@ class PrecipitationDetector:
             nc.schema_version = self.schema_version
             nc.method = self.method
             if self.method == "hardy":
+                nc.hardy_electron_energy_model = (
+                    self.hardy_electron_energy_model
+                )
                 for name in ELECTRON_METADATA_ATTRIBUTES:
                     nc.setncattr(name, getattr(self, name))
             nc.count_source = self.count_source

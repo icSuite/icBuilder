@@ -12,9 +12,17 @@ from tqdm.contrib.concurrent import process_map
 
 from icbuilder import PrecipitationImage
 from icbuilder.kp import load_gfz_kp
-from icbuilder.precipitationimage import REGRID_METHOD, REGRID_UNCERTAINTY
-from icbuilder.precipitationdetector import hardy_electron_metadata
-from icbuilder.precipitationimage import HARDY_COORDINATE_NOTE
+from icbuilder.precipitationimage import (
+    COLLAPSED_HARDY_COORDINATE_NOTE,
+    HARDY_COORDINATE_NOTE,
+    REGRID_METHOD,
+    REGRID_UNCERTAINTY,
+)
+from icbuilder.precipitationdetector import (
+    DEFAULT_HARDY_ELECTRON_ENERGY_MODEL,
+    HARDY_ELECTRON_ENERGY_MODELS,
+    hardy_electron_metadata,
+)
 
 
 #%%
@@ -41,6 +49,9 @@ def save_precipitation_file(precipitation, filename):
             precipitation.proton_energy_model,
             precipitation.proton_energy_constant,
             precipitation.proton_energy_uncertainty_constant,
+            precipitation.hardy_electron_energy_model
+            if precipitation.method == "hardy"
+            else DEFAULT_HARDY_ELECTRON_ENERGY_MODEL,
         )
         if status != "complete":
             raise RuntimeError(f"incomplete precipitation file: {partial_file}")
@@ -56,6 +67,7 @@ def precipitation_file_status(
     proton_energy_model,
     proton_energy,
     proton_energy_uncertainty,
+    hardy_electron_energy_model=DEFAULT_HARDY_ELECTRON_ENERGY_MODEL,
 ):
     """Return missing, invalid, mismatch, or complete for one Product-2 file."""
 
@@ -95,7 +107,16 @@ def precipitation_file_status(
                 if nc.variables[name].shape != shape:
                     return "invalid"
             if method == "hardy":
-                for name, value in hardy_electron_metadata(HARDY_COORDINATE_NOTE).items():
+                if getattr(nc, "hardy_electron_energy_model", None) != hardy_electron_energy_model:
+                    return "mismatch"
+                coordinate_note = (
+                    HARDY_COORDINATE_NOTE
+                    if hardy_electron_energy_model == "effective"
+                    else COLLAPSED_HARDY_COORDINATE_NOTE
+                )
+                for name, value in hardy_electron_metadata(
+                    hardy_electron_energy_model, coordinate_note
+                ).items():
                     if getattr(nc, name, None) != value:
                         return "mismatch"
                 if nc.variables["E0_response_range_flag"].shape != shape:
@@ -129,6 +150,7 @@ def process_orbit(
     proton_energy_model,
     proton_energy,
     proton_energy_uncertainty,
+    hardy_electron_energy_model=DEFAULT_HARDY_ELECTRON_ENERGY_MODEL,
 ):
     """Create one precipitation product from the required binned sensors."""
 
@@ -146,6 +168,7 @@ def process_orbit(
         si12=si12_file,
         si13=si13_file,
         method=method,
+        hardy_electron_energy_model=hardy_electron_energy_model,
         kp_series=kp_series,
         proton_energy_model=proton_energy_model,
         proton_energy=proton_energy,
@@ -195,6 +218,15 @@ def parse_args(argv=None):
         default="zhang_paxton",
     )
     parser.add_argument(
+        "--hardy-electron-energy-model",
+        choices=HARDY_ELECTRON_ENERGY_MODELS,
+        default=DEFAULT_HARDY_ELECTRON_ENERGY_MODEL,
+        help=(
+            "Hardy energy supplied to WIC when --precipitation-method hardy "
+            "(default: effective)."
+        ),
+    )
+    parser.add_argument(
         "--proton-energy-model",
         choices=("hardy", "constant"),
         default="hardy",
@@ -224,6 +256,8 @@ def main(argv=None):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Precipitation method: {args.precipitation_method}")
+    if args.precipitation_method == "hardy":
+        print(f"Hardy electron energy model: {args.hardy_electron_energy_model}")
     print("Proton flux source: SI12")
     print(f"Proton energy model: {args.proton_energy_model}")
     if args.proton_energy_model == "constant":
@@ -251,6 +285,7 @@ def main(argv=None):
             args.proton_energy_model,
             args.proton_energy,
             args.proton_energy_uncertainty,
+            args.hardy_electron_energy_model,
         )
         if status == "mismatch":
             raise ValueError(
@@ -277,6 +312,7 @@ def main(argv=None):
         output_dir=output_dir,
         kp_series=kp_series,
         method=args.precipitation_method,
+        hardy_electron_energy_model=args.hardy_electron_energy_model,
         proton_energy_model=args.proton_energy_model,
         proton_energy=args.proton_energy,
         proton_energy_uncertainty=args.proton_energy_uncertainty,

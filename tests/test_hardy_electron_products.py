@@ -2,7 +2,10 @@
 
 import numpy as np
 import pytest
-from icphysics import hardy_electron_precipitation
+from icphysics import (
+    collapsed_hardy_robinson_effective_energy,
+    hardy_robinson_effective_precipitation,
+)
 from icreader import load, open_product
 from netCDF4 import Dataset
 
@@ -36,8 +39,13 @@ def test_hardy_uses_wic_si12_when_si13_missing(tmp_path, proton_model, count_sou
     assert missing.method_valid[1].any()  # unmatched second SI13 frame remains useful
     for name in ("E0", "dE0", "Fe", "dFe", "varE0Fe", "Fp", "method_valid", "method_quality_weight"):
         np.testing.assert_allclose(getattr(missing, name), getattr(complete, name), equal_nan=True)
-    expected = hardy_electron_precipitation(missing.kp[:, None, None], missing.mlt, missing.mlat)
-    np.testing.assert_allclose(missing.E0[missing.method_valid], expected["mean_energy"][missing.method_valid])
+    expected = hardy_robinson_effective_precipitation(
+        missing.kp[:, None, None], missing.mlt, missing.mlat
+    )
+    np.testing.assert_allclose(
+        missing.E0[missing.method_valid],
+        expected["effective_energy"][missing.method_valid],
+    )
     np.testing.assert_allclose(missing.dE0[missing.method_valid], 0)
     np.testing.assert_allclose(missing.varE0Fe[missing.method_valid], 0)
 
@@ -60,6 +68,27 @@ def test_hardy_missing_measurement_error_preserves_nominal(tmp_path):
     assert not conductance.conductance_uncertainty_valid.any()
 
 
+def test_collapsed_hardy_detector_uses_mlt_profile(tmp_path):
+    source = tmp_path / "fuv.nc"
+    write_fuv_detector(source, two_frames=True)
+    product = PrecipitationDetector(
+        source,
+        method="hardy",
+        hardy_electron_energy_model="collapsed_effective",
+        kp_series=kp_series(),
+        proton_energy_model="constant",
+    )
+    expected = collapsed_hardy_robinson_effective_energy(
+        product.kp[:, None, None], product.mlt
+    )
+    np.testing.assert_allclose(
+        product.E0[product.method_valid], expected[product.method_valid]
+    )
+    assert product.hardy_electron_energy_model == "collapsed_effective"
+    assert product.electron_energy_model == "hardy_robinson_effective_collapsed"
+    assert "spherical-area average" in product.electron_energy_collapse
+
+
 def test_hardy_restart_detects_electron_selection_and_provenance(tmp_path):
     source = tmp_path / "fuv.nc"
     write_fuv_detector(source)
@@ -69,6 +98,11 @@ def test_hardy_restart_detects_electron_selection_and_provenance(tmp_path):
     kwargs = dict(filename=output, source_fuv_detector=source, proton_energy_model="constant",
                   proton_energy=2, proton_energy_uncertainty=0, smoothed=False)
     assert ORBIT_SCRIPT.precipitation_detector_file_status(**kwargs, method="hardy") == "complete"
+    assert ORBIT_SCRIPT.precipitation_detector_file_status(
+        **kwargs,
+        method="hardy",
+        hardy_electron_energy_model="collapsed_effective",
+    ) == "mismatch"
     assert ORBIT_SCRIPT.precipitation_detector_file_status(**kwargs, method="image_ratio") == "mismatch"
     with Dataset(output, "r+") as nc:
         nc.electron_coefficient_source = "different-table"
@@ -110,12 +144,24 @@ def test_hardy_detector_conductance_and_cs_roundtrip(tmp_path):
             np.testing.assert_allclose(loaded.read("E0_response_range_fraction"), product.E0_response_range_fraction, equal_nan=True)
 
 
-def test_hardy_bin_first_optional_si13_and_conductance_roundtrip(tmp_path):
+@pytest.mark.parametrize(
+    "hardy_electron_energy_model", ["effective", "collapsed_effective"]
+)
+def test_hardy_bin_first_optional_si13_and_conductance_roundtrip(
+    tmp_path, hardy_electron_energy_model
+):
     grid, _ = make_image_grids()
     wic = _Binned("WIC", [BASE_TIME], grid, 1000)
     si12 = _Binned("SI12", [BASE_TIME], grid, 4)
     si13 = _Binned("SI13", [BASE_TIME], grid, 6)
-    kwargs = dict(wic=wic, si12=si12, method="hardy", kp_series=_kp_series(), proton_energy_model="constant")
+    kwargs = dict(
+        wic=wic,
+        si12=si12,
+        method="hardy",
+        hardy_electron_energy_model=hardy_electron_energy_model,
+        kp_series=_kp_series(),
+        proton_energy_model="constant",
+    )
     product = PrecipitationImage(**kwargs, si13=si13)
     missing = PrecipitationImage(**kwargs)
     for name in ("E0", "dE0", "Fe", "dFe", "varE0Fe", "w"):
@@ -124,6 +170,21 @@ def test_hardy_bin_first_optional_si13_and_conductance_roundtrip(tmp_path):
     missing.to_nc(path)
     restored = load(path)
     assert restored.method == "hardy"
+    with Dataset(path) as nc:
+        assert nc.hardy_electron_energy_model == hardy_electron_energy_model
+    script = _pipeline_script("make_precipitation_orbit_files.py")
+    status_args = (path, "hardy", "constant", 2.0, 0.0)
+    assert script.precipitation_file_status(
+        *status_args, hardy_electron_energy_model
+    ) == "complete"
+    other_model = (
+        "collapsed_effective"
+        if hardy_electron_energy_model == "effective"
+        else "effective"
+    )
+    assert script.precipitation_file_status(
+        *status_args, other_model
+    ) == "mismatch"
     np.testing.assert_array_equal(restored.E0_response_range_flag, missing.E0_response_range_flag)
     conductance = ConductanceImage(path)
     path3 = tmp_path / "binned_conduct.nc"
@@ -131,6 +192,7 @@ def test_hardy_bin_first_optional_si13_and_conductance_roundtrip(tmp_path):
     restored3 = load(path3)
     assert restored3.precipitation_method == "hardy"
     assert restored3.electron_energy_uncertainty_method == missing.electron_energy_uncertainty_method
+    assert restored3.electron_energy_collapse == missing.electron_energy_collapse
     np.testing.assert_array_equal(restored3.E0_response_range_flag, missing.E0_response_range_flag)
 
 

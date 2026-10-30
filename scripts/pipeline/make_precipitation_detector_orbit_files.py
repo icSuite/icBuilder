@@ -22,8 +22,11 @@ from icbuilder.precipitationdetector import (
     DEFAULT_SI12_SMOOTHING_WIDTH,
     DEFAULT_SI13_SMOOTHING_WIDTH,
     DEFAULT_WIC_SMOOTHING_WIDTH,
+    DEFAULT_HARDY_ELECTRON_ENERGY_MODEL,
     PRECIPITATION_METHOD,
     PRECIPITATION_METHODS,
+    COLLAPSED_HARDY_COORDINATE_NOTE,
+    HARDY_ELECTRON_ENERGY_MODELS,
     HARDY_UNSUBTRACTED_QUALITY_WEIGHT_METHOD,
     hardy_electron_metadata,
     HARDY_COORDINATE_NOTE,
@@ -50,6 +53,7 @@ def precipitation_detector_file_status(
     si12_smoothing_width=DEFAULT_SI12_SMOOTHING_WIDTH,
     si13_smoothing_width=DEFAULT_SI13_SMOOTHING_WIDTH,
     method=PRECIPITATION_METHOD,
+    hardy_electron_energy_model=DEFAULT_HARDY_ELECTRON_ENERGY_MODEL,
 ):
     """Return missing, invalid, mismatch, or complete for one Product-2 file."""
 
@@ -84,7 +88,18 @@ def precipitation_detector_file_status(
             if method == "hardy" and count_source == "unsubtracted":
                 expected_quality_method = HARDY_UNSUBTRACTED_QUALITY_WEIGHT_METHOD
             if method == "hardy":
-                expected_metadata = hardy_electron_metadata(HARDY_COORDINATE_NOTE)
+                coordinate_note = (
+                    HARDY_COORDINATE_NOTE
+                    if hardy_electron_energy_model == "effective"
+                    else COLLAPSED_HARDY_COORDINATE_NOTE
+                )
+                expected_metadata = hardy_electron_metadata(
+                    hardy_electron_energy_model, coordinate_note
+                )
+                if product.attrs.get(
+                    "hardy_electron_energy_model"
+                ) != hardy_electron_energy_model:
+                    return "mismatch"
                 if any(product.attrs.get(name) != value for name, value in expected_metadata.items()):
                     return "mismatch"
                 if not hasattr(product, "E0_response_range_flag"):
@@ -151,6 +166,9 @@ def save_precipitation_detector(product, filename):
             product.si12_smoothing_width_pixels,
             product.si13_smoothing_width_pixels,
             product.method,
+            product.hardy_electron_energy_model
+            if product.method == "hardy"
+            else DEFAULT_HARDY_ELECTRON_ENERGY_MODEL,
         )
         if status != "complete":
             raise RuntimeError(f"incomplete precipitation_detector file: {partial}")
@@ -211,6 +229,7 @@ def process_orbit(
     si12_smoothing_width=DEFAULT_SI12_SMOOTHING_WIDTH,
     si13_smoothing_width=DEFAULT_SI13_SMOOTHING_WIDTH,
     method=PRECIPITATION_METHOD,
+    hardy_electron_energy_model=DEFAULT_HARDY_ELECTRON_ENERGY_MODEL,
 ):
     """Calculate and save one detector-space precipitation orbit."""
 
@@ -220,6 +239,7 @@ def process_orbit(
             source,
             kp_series=kp_series,
             method=method,
+            hardy_electron_energy_model=hardy_electron_energy_model,
             proton_energy_model=proton_energy_model,
             proton_energy=proton_energy,
             proton_energy_uncertainty=proton_energy_uncertainty,
@@ -271,6 +291,15 @@ def parse_args(argv=None):
     )
     parser.add_argument("--orbit", action="append", type=int)
     parser.add_argument("--precipitation-method", choices=PRECIPITATION_METHODS, default=PRECIPITATION_METHOD)
+    parser.add_argument(
+        "--hardy-electron-energy-model",
+        choices=HARDY_ELECTRON_ENERGY_MODELS,
+        default=DEFAULT_HARDY_ELECTRON_ENERGY_MODEL,
+        help=(
+            "Hardy energy supplied to WIC when --precipitation-method hardy "
+            "(default: effective)."
+        ),
+    )
     parser.add_argument(
         "--proton-energy-model",
         choices=PROTON_ENERGY_MODELS,
@@ -359,10 +388,18 @@ def main(argv=None):
                 f"_si12{width_labels['si12']}"
                 f"_si13{width_labels['si13']}"
             )
-        model_label = (
-            f"IR_{args.proton_energy_model}" if args.precipitation_method == "image_ratio"
-            else f"HardyElectron_{args.proton_energy_model.capitalize()}Proton"
-        )
+        if args.precipitation_method == "image_ratio":
+            model_label = f"IR_{args.proton_energy_model}"
+        elif args.hardy_electron_energy_model == "effective":
+            model_label = (
+                f"HardyEffectiveElectron_"
+                f"{args.proton_energy_model.capitalize()}Proton"
+            )
+        else:
+            model_label = (
+                f"CollapsedHardyEffectiveElectron_"
+                f"{args.proton_energy_model.capitalize()}Proton"
+            )
         retrieval_label = f"{model_label}{count_suffix}{smoothing_suffix}"
     else:
         retrieval_label = args.retrieval_label
@@ -394,6 +431,7 @@ def main(argv=None):
             si12_smoothing_width,
             si13_smoothing_width,
             args.precipitation_method,
+            args.hardy_electron_energy_model,
         )
         if status == "mismatch":
             raise ValueError(
@@ -420,6 +458,7 @@ def main(argv=None):
         output_directory=output_directory,
         kp_series=kp_series,
         method=args.precipitation_method,
+        hardy_electron_energy_model=args.hardy_electron_energy_model,
         proton_energy_model=args.proton_energy_model,
         proton_energy=args.proton_energy,
         proton_energy_uncertainty=args.proton_energy_uncertainty,

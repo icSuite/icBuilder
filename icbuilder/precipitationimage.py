@@ -13,13 +13,19 @@ from icphysics import (
     PROTON_RESPONSE_ENERGY_RANGE,
     hardy_ion_precipitation,
     precipitation_from_ratio,
-    precipitation_from_hardy,
+    precipitation_from_collapsed_hardy_effective,
+    precipitation_from_hardy_effective,
     precipitation_from_zhang_paxton,
     proton_correct_images,
 )
 
 from .grids import grid_mlt
-from .precipitationdetector import ELECTRON_METADATA_ATTRIBUTES, hardy_electron_metadata
+from .precipitationdetector import (
+    DEFAULT_HARDY_ELECTRON_ENERGY_MODEL,
+    ELECTRON_METADATA_ATTRIBUTES,
+    HARDY_ELECTRON_ENERGY_MODELS,
+    hardy_electron_metadata,
+)
 from .kp import load_gfz_kp, match_gfz_kp
 
 
@@ -335,6 +341,11 @@ HARDY_COORDINATE_NOTE = (
     "Hardy corrected geomagnetic coordinates approximated by the Product-2 "
     "Modified Apex grid at 130 km"
 )
+COLLAPSED_HARDY_COORDINATE_NOTE = (
+    "Hardy latitude profile is collapsed internally in corrected geomagnetic "
+    "coordinates; the Product-2 Modified Apex-grid MLT at 130 km approximates "
+    "the source magnetic local time"
+)
 
 
 def make_proton_energy(kp, grid, shape, model, constant_energy, constant_uncertainty):
@@ -398,6 +409,7 @@ class PrecipitationImage:
         *,
         si13=None,
         kp_series=None,
+        hardy_electron_energy_model=DEFAULT_HARDY_ELECTRON_ENERGY_MODEL,
         proton_energy_model="hardy",
         proton_energy=2.0,
         proton_energy_uncertainty=0.0,
@@ -409,12 +421,26 @@ class PrecipitationImage:
             raise ValueError("method must be image_ratio, zhang_paxton, or hardy")
         if proton_flux_source != PROTON_FLUX_SOURCE:
             raise ValueError("proton_flux_source must currently be 'SI12'")
+        if method == "hardy" and (
+            hardy_electron_energy_model not in HARDY_ELECTRON_ENERGY_MODELS
+        ):
+            raise ValueError(
+                f"hardy_electron_energy_model must be one of "
+                f"{HARDY_ELECTRON_ENERGY_MODELS}"
+            )
         if physics_function is None:
-            physics_function = {
-                "image_ratio": precipitation_from_ratio,
-                "hardy": precipitation_from_hardy,
-                "zhang_paxton": precipitation_from_zhang_paxton,
-            }[method]
+            if method == "hardy":
+                physics_function = {
+                    "effective": precipitation_from_hardy_effective,
+                    "collapsed_effective": (
+                        precipitation_from_collapsed_hardy_effective
+                    ),
+                }[hardy_electron_energy_model]
+            else:
+                physics_function = {
+                    "image_ratio": precipitation_from_ratio,
+                    "zhang_paxton": precipitation_from_zhang_paxton,
+                }[method]
 
         input_files = {}
         for name, image in (("wic", wic), ("si12", si12), ("si13", si13)):
@@ -437,7 +463,15 @@ class PrecipitationImage:
 
         self.method = method
         if method == "hardy":
-            for name, value in hardy_electron_metadata(HARDY_COORDINATE_NOTE).items():
+            self.hardy_electron_energy_model = hardy_electron_energy_model
+            coordinate_note = (
+                HARDY_COORDINATE_NOTE
+                if hardy_electron_energy_model == "effective"
+                else COLLAPSED_HARDY_COORDINATE_NOTE
+            )
+            for name, value in hardy_electron_metadata(
+                hardy_electron_energy_model, coordinate_note
+            ).items():
                 setattr(self, name, value)
         self.grid = deepcopy(wic.grid)
         self.proton_flux_source = str(proton_flux_source)
@@ -513,7 +547,11 @@ class PrecipitationImage:
         if method == "image_ratio":
             inputs.update(si13_corrected=self.si13_corrected, dsi13_corrected=self.dsi13_corrected)
         elif method == "hardy":
-            inputs.update(kp=self.kp[:, None, None], mlt=grid_mlt(self.grid), mlat=np.asarray(self.grid.lat))
+            inputs.update(
+                kp=self.kp[:, None, None], mlt=grid_mlt(self.grid)
+            )
+            if self.hardy_electron_energy_model == "effective":
+                inputs["mlat"] = np.asarray(self.grid.lat)
         else:
             inputs.update(kp=self.kp, mlt=grid_mlt(self.grid))
 
@@ -567,6 +605,9 @@ class PrecipitationImage:
             nc.schema_version = 2
             nc.method = self.method
             if self.method == "hardy":
+                nc.hardy_electron_energy_model = (
+                    self.hardy_electron_energy_model
+                )
                 for name in ELECTRON_METADATA_ATTRIBUTES:
                     nc.setncattr(name, getattr(self, name))
             nc.proton_flux_source = self.proton_flux_source
