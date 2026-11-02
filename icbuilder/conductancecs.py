@@ -8,7 +8,8 @@ import numpy as np
 from netCDF4 import Dataset
 
 from .conductancedetector import (
-    CONDUCTANCE_MODEL,
+    CONDUCTANCE_MODELS,
+    FANG_METADATA_ATTRIBUTES,
     SCHEMA_VERSION as DETECTOR_SCHEMA_VERSION,
 )
 from .detectorcs import (
@@ -51,6 +52,10 @@ UNCERTAINTY_FIELDS = {
 COVARIANCE_FIELDS = {
     "varE0Fe": "keV mW m-2",
 }
+FANG_MEAN_FIELDS = {
+    "fang_magnetic_field_150km_microtesla": "microtesla",
+    "fang_evaluated_energy": "keV",
+}
 RESULT_FIELDS = tuple(
     list(MEAN_FIELDS)
     + list(UNCERTAINTY_FIELDS)
@@ -71,12 +76,12 @@ def _require_source(source, filename):
         source.product_type != "conductance_detector"
         or source.representation != "detector"
         or int(source.schema_version) != DETECTOR_SCHEMA_VERSION
-        or source.conductance_model != CONDUCTANCE_MODEL
+        or source.conductance_model not in CONDUCTANCE_MODELS
         or source.count_uncertainty_mode != COUNT_UNCERTAINTY_MODE
     ):
         raise ValueError(
             f"{filename} is not a supported schema-{DETECTOR_SCHEMA_VERSION} "
-            f"{CONDUCTANCE_MODEL} conductance_detector product"
+            "conductance_detector product"
         )
 
     return source.shape
@@ -103,6 +108,9 @@ class ConductanceCS:
         self.conductance_uncertainty_method = (
             source.conductance_uncertainty_method
         )
+        if self.conductance_model == "fang":
+            for name in FANG_METADATA_ATTRIBUTES:
+                setattr(self, name, source.attrs[name])
         self.precipitation_method = source.precipitation_method
         if self.precipitation_method in MODELED_ELECTRON_ENERGY_METHODS:
             for name in ELECTRON_METADATA_ATTRIBUTES:
@@ -175,6 +183,21 @@ class ConductanceCS:
 
         for name in MEAN_FIELDS | UNCERTAINTY_FIELDS | COVARIANCE_FIELDS:
             setattr(self, name, np.full(self.shape, np.nan))
+        if self.conductance_model == "fang":
+            for name in FANG_MEAN_FIELDS:
+                setattr(self, name, np.full(self.shape, np.nan))
+            for name in (
+                "fang_within_model_domain_fraction",
+                "fang_energy_clipped_low_fraction",
+                "fang_uncertainty_straddles_low_energy_boundary_fraction",
+            ):
+                setattr(self, name, np.full(self.shape, np.nan))
+            for name in (
+                "fang_within_model_domain_any",
+                "fang_energy_clipped_low_any",
+                "fang_uncertainty_straddles_low_energy_boundary_any",
+            ):
+                setattr(self, name, np.zeros(self.shape, dtype=bool))
         self.source_count = np.zeros(self.shape, dtype=np.int32)
         self.coverage = np.zeros(self.shape)
         self.uncertainty_source_count = np.zeros(self.shape, dtype=np.int32)
@@ -203,6 +226,14 @@ class ConductanceCS:
                 values, valid, mapping, output_shape
             )
             getattr(self, name)[frame] = reduced
+
+        if self.conductance_model == "fang":
+            for name in FANG_MEAN_FIELDS:
+                values = np.asarray(source.read(name, frame), dtype=float)
+                reduced, _ = reduce_area_mean(
+                    values, conductance_valid, mapping, output_shape
+                )
+                getattr(self, name)[frame] = reduced
 
         for name in UNCERTAINTY_FIELDS:
             uncertainty = np.asarray(source.read(name, frame), dtype=float)
@@ -242,6 +273,23 @@ class ConductanceCS:
         self.conductance_uncertainty_valid[frame] = uncertainty_coverage > 0
         self.Ep_clipping_fraction[frame] = clipping_fraction
         self.Ep_clipping_any[frame] = clipping_any
+        if self.conductance_model == "fang":
+            for source_name, output_name in (
+                ("fang_within_model_domain", "fang_within_model_domain"),
+                ("fang_energy_clipped_low", "fang_energy_clipped_low"),
+                (
+                    "fang_uncertainty_straddles_low_energy_boundary",
+                    "fang_uncertainty_straddles_low_energy_boundary",
+                ),
+            ):
+                fraction, any_flag = reduce_flag_fraction(
+                    np.asarray(source.read(source_name, frame), dtype=bool),
+                    conductance_valid,
+                    mapping,
+                    output_shape,
+                )
+                getattr(self, f"{output_name}_fraction")[frame] = fraction
+                getattr(self, f"{output_name}_any")[frame] = any_flag
         if self.precipitation_method in MODELED_ELECTRON_ENERGY_METHODS:
             fraction, any_flag = reduce_flag_fraction(
                 np.asarray(source.read("E0_response_range_flag", frame), dtype=np.int8) > 0,
@@ -277,6 +325,18 @@ class ConductanceCS:
                 )
                 getattr(self, name)[frame] = reduced
 
+        if self.conductance_model == "fang":
+            for name in FANG_MEAN_FIELDS:
+                values = np.asarray(source.read(name), dtype=float)
+                for frame, mapping in enumerate(mappings):
+                    reduced, _ = reduce_area_mean(
+                        values[frame],
+                        conductance_valid[frame],
+                        mapping,
+                        output_shape,
+                    )
+                    getattr(self, name)[frame] = reduced
+
         for name in UNCERTAINTY_FIELDS:
             uncertainty = np.asarray(source.read(name), dtype=float)
             for frame, mapping in enumerate(mappings):
@@ -304,6 +364,15 @@ class ConductanceCS:
         clipping_flag = np.asarray(
             source.read("Ep_clipping_flag"), dtype=bool
         )
+        if self.conductance_model == "fang":
+            fang_flags = {
+                name: np.asarray(source.read(name), dtype=bool)
+                for name in (
+                    "fang_within_model_domain",
+                    "fang_energy_clipped_low",
+                    "fang_uncertainty_straddles_low_energy_boundary",
+                )
+            }
         for frame, mapping in enumerate(mappings):
             count, coverage = reduce_support(
                 conductance_valid[frame], mapping, cell_area, output_shape
@@ -327,6 +396,16 @@ class ConductanceCS:
             )
             self.Ep_clipping_fraction[frame] = clipping_fraction
             self.Ep_clipping_any[frame] = clipping_any
+            if self.conductance_model == "fang":
+                for name, values in fang_flags.items():
+                    fraction, any_flag = reduce_flag_fraction(
+                        values[frame],
+                        conductance_valid[frame],
+                        mapping,
+                        output_shape,
+                    )
+                    getattr(self, f"{name}_fraction")[frame] = fraction
+                    getattr(self, f"{name}_any")[frame] = any_flag
             if self.precipitation_method in MODELED_ELECTRON_ENERGY_METHODS:
                 fraction, any_flag = reduce_flag_fraction(
                     response_flag[frame], conductance_valid[frame], mapping, output_shape
@@ -350,6 +429,9 @@ class ConductanceCS:
             nc.conductance_uncertainty_method = (
                 self.conductance_uncertainty_method
             )
+            if self.conductance_model == "fang":
+                for name in FANG_METADATA_ATTRIBUTES:
+                    nc.setncattr(name, getattr(self, name))
             nc.precipitation_method = self.precipitation_method
             if self.precipitation_method in MODELED_ELECTRON_ENERGY_METHODS:
                 for name in ELECTRON_METADATA_ATTRIBUTES:
@@ -431,6 +513,10 @@ class ConductanceCS:
                 list(MEAN_FIELDS.items())
                 + list(UNCERTAINTY_FIELDS.items())
                 + list(COVARIANCE_FIELDS.items())
+                + (
+                    list(FANG_MEAN_FIELDS.items())
+                    if self.conductance_model == "fang" else []
+                )
             ):
                 variable = nc.createVariable(
                     name, "f4", dimensions, zlib=True
@@ -450,12 +536,35 @@ class ConductanceCS:
                 variable[:] = getattr(self, name)
                 variable.units = "1"
 
+            if self.conductance_model == "fang":
+                for name in (
+                    "fang_within_model_domain_fraction",
+                    "fang_energy_clipped_low_fraction",
+                    "fang_uncertainty_straddles_low_energy_boundary_fraction",
+                ):
+                    variable = nc.createVariable(
+                        name, "f4", dimensions, zlib=True
+                    )
+                    variable[:] = getattr(self, name)
+                    variable.units = "1"
+
             for name in (
                 "conductance_valid", "conductance_uncertainty_valid",
                 "Ep_clipping_any",
             ):
                 variable = nc.createVariable(name, "i1", dimensions, zlib=True)
                 variable[:] = getattr(self, name).astype(np.int8)
+
+            if self.conductance_model == "fang":
+                for name in (
+                    "fang_within_model_domain_any",
+                    "fang_energy_clipped_low_any",
+                    "fang_uncertainty_straddles_low_energy_boundary_any",
+                ):
+                    variable = nc.createVariable(
+                        name, "i1", dimensions, zlib=True
+                    )
+                    variable[:] = getattr(self, name).astype(np.int8)
 
             nc.coverage_definition = (
                 "Valid detector-footprint overlap area divided by projected "

@@ -8,11 +8,12 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from icphysics import robinson_conductance
+from icphysics import fang_2025_conductance_uncertainty, robinson_conductance
 from netCDF4 import Dataset, date2num
 
 from icbuilder.conductancedetector import (
     CONDUCTANCE_MODEL,
+    FANG_METADATA_ATTRIBUTES,
     SCHEMA_VERSION,
     ConductanceDetector,
 )
@@ -272,6 +273,69 @@ def test_detector_conductance_netcdf_is_self_describing(tmp_path):
     ) == "mismatch"
 
 
+def test_fang_detector_uses_150km_field_and_records_floor(tmp_path, monkeypatch):
+    source = tmp_path / "precipitation.nc"
+    write_precipitation_detector(source)
+    with Dataset(source, "r+") as nc:
+        energy = nc["E0"][:]
+        energy[0, 0, 0] = 0.5
+        nc["E0"][:] = energy
+
+    shape = (1, 2, 2)
+    latitude = np.full(shape, 60.0)
+    longitude = np.full(shape, -75.0)
+    magnetic_field = np.full(shape, 50.0)
+
+    def fixed_field(*args, **kwargs):
+        return latitude.copy(), longitude.copy(), magnetic_field.copy()
+
+    monkeypatch.setattr(
+        "icbuilder.conductancedetector.fang_magnetic_field_at_150km",
+        fixed_field,
+    )
+    product = ConductanceDetector(
+        source,
+        conductance_model="fang",
+        software_version="product3-test",
+    )
+    expected = fang_2025_conductance_uncertainty(
+        product.E0,
+        product.Fe,
+        magnetic_field,
+        mean_energy_std=product.dE0,
+        energy_flux_std=product.dFe,
+        magnetic_field_std=np.zeros(shape),
+        energy_flux_covariance=product.varE0Fe,
+        low_energy_policy="clip",
+    )
+
+    np.testing.assert_allclose(product.P, expected["P"], equal_nan=True)
+    np.testing.assert_allclose(product.H, expected["H"], equal_nan=True)
+    np.testing.assert_allclose(product.dP, expected["P_std"], equal_nan=True)
+    np.testing.assert_allclose(product.dH, expected["H_std"], equal_nan=True)
+    assert product.fang_energy_clipped_low[0, 0, 0]
+    assert product.fang_evaluated_energy[0, 0, 0] == 1.0
+
+    output = tmp_path / "fang.nc"
+    ORBIT_SCRIPT.save_conductance_detector(product, output)
+    assert ORBIT_SCRIPT.conductance_detector_file_status(
+        output, source, "fang"
+    ) == "complete"
+    with Dataset(output) as nc:
+        assert nc.conductance_model == "fang"
+        for name in FANG_METADATA_ATTRIBUTES:
+            assert name in nc.ncattrs()
+        assert nc["fang_magnetic_field_150km_microtesla"].units == "microtesla"
+        assert nc["fang_energy_clipped_low"][0, 0, 0] == 1
+        assert nc["fang_evaluated_energy"][0, 0, 0] == 1.0
+
+    with Dataset(output, "r+") as nc:
+        nc.fang_low_energy_policy = "reject"
+    assert ORBIT_SCRIPT.conductance_detector_file_status(
+        output, source, "fang"
+    ) == "mismatch"
+
+
 def test_detector_conductance_rejects_wrong_product2_schema(tmp_path):
     source = tmp_path / "precipitation.nc"
     write_precipitation_detector(source)
@@ -317,6 +381,16 @@ def test_orbit_script_writes_and_restarts_with_separate_bases(
     )
     assert output.is_file()
     assert ORBIT_SCRIPT.main(arguments) == []
+
+    fang_arguments = arguments + ["--conductance-model", "fang"]
+    assert ORBIT_SCRIPT.main(fang_arguments) == [(1, 1)]
+    fang_output = (
+        base_output / "conductance_detector"
+        / ORBIT_SCRIPT.DEFAULT_RETRIEVAL_LABEL / "fang"
+        / "or_0001.nc"
+    )
+    assert fang_output.is_file()
+    assert ORBIT_SCRIPT.main(fang_arguments) == []
 
 
 def test_orbit_script_defaults_and_parallel_routing(tmp_path, monkeypatch):
@@ -365,6 +439,7 @@ def test_orbit_script_defaults_and_parallel_routing(tmp_path, monkeypatch):
             base_output / "conductance_detector"
             / ORBIT_SCRIPT.DEFAULT_RETRIEVAL_LABEL / "robinson"
         )
+        assert settings["conductance_model"] == "robinson"
 
 
 def test_orbit_script_rejects_invalid_worker_count():
@@ -381,4 +456,6 @@ def test_orbit_worker_reports_failed_orbit(tmp_path, monkeypatch):
     with pytest.raises(
         RuntimeError, match="conductance_detector orbit 0042 failed"
     ):
-        ORBIT_SCRIPT.process_orbit(42, tmp_path, tmp_path, "test")
+        ORBIT_SCRIPT.process_orbit(
+            42, tmp_path, tmp_path, "robinson", "test"
+        )

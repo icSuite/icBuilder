@@ -167,6 +167,29 @@ MLAT. Its `dE0` is the discarded latitude-profile RMS spread, not a calibrated
 predictive uncertainty. SI13 remains diagnostic and WIC supplies the observed
 electron energy flux.
 
+Detector Product 3 supports `--conductance-model robinson|fang`. Fang (2025)
+uses the Product-2 mean energy and energy flux directly. Each Modified-Apex
+detector footprint is mapped along its field line from the 130 km product
+reference height to 150 km, where IGRF supplies the magnetic-field magnitude.
+Positive energies below Fang's published 1 keV limit are evaluated at 1 keV
+and explicitly flagged; energies above 20 keV remain unavailable. Product 3
+stores the original `E0`, the evaluated Fang energy, the 150 km field, all
+domain flags, and the exact IGRF coefficient identity. Its uncertainty is the
+first-order propagation of Product-2 `dE0`, `dFe`, and `varE0Fe`; magnetic-field
+uncertainty is currently excluded. For collapsed Zhang--Paxton, `dE0` remains
+structural latitude-profile spread rather than calibrated predictive error.
+
+```bash
+python scripts/pipeline/make_conductance_detector_orbit_files.py \
+    --base-input /path/to/input --base-output /path/to/output \
+    --retrieval-label CollapsedZhangPaxtonQWeightedElectron_HardyProton_smoothed_wic1_si121_si131 \
+    --conductance-model fang --workers 10
+python scripts/pipeline/make_detector_cs_orbit_files.py \
+    --base-input /path/to/output --base-output /path/to/output \
+    --retrieval-label CollapsedZhangPaxtonQWeightedElectron_HardyProton_smoothed_wic1_si121_si131 \
+    --conductance-model fang --conductance-only --workers 10
+```
+
 Without an explicit label, the Hardy Product-2 runner derives
 `HardyElectron_HardyProton_smoothed_wic0p8_si120_si131p2` (constant protons
 instead produce `HardyElectron_ConstantProton...`). Existing image-ratio labels

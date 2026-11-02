@@ -20,8 +20,11 @@ from icbuilder.precipitationdetector import (
 
 from icbuilder.conductancedetector import (
     CONDUCTANCE_MODEL,
+    CONDUCTANCE_MODELS,
+    FANG_METADATA_ATTRIBUTES,
     SCHEMA_VERSION,
     ConductanceDetector,
+    fang_conductance_metadata,
 )
 
 
@@ -91,6 +94,31 @@ def conductance_detector_file_status(
                     return "invalid"
                 if product.E0_response_range_flag.shape != product.shape:
                     return "invalid"
+            if conductance_model == "fang":
+                expected_metadata = fang_conductance_metadata()
+                for name in FANG_METADATA_ATTRIBUTES:
+                    if name not in product.attrs:
+                        return "invalid"
+                    expected = expected_metadata[name]
+                    actual = product.attrs[name]
+                    if isinstance(expected, float):
+                        if not np.isclose(actual, expected):
+                            return "mismatch"
+                    elif actual != expected:
+                        return "mismatch"
+                for name in (
+                    "fang_magnetic_latitude_150km",
+                    "fang_magnetic_longitude_150km",
+                    "fang_magnetic_field_150km_microtesla",
+                    "fang_evaluated_energy",
+                    "fang_within_model_domain",
+                    "fang_energy_clipped_low",
+                    "fang_uncertainty_straddles_low_energy_boundary",
+                ):
+                    if not hasattr(product, name):
+                        return "invalid"
+                    if getattr(product, name).shape != product.shape:
+                        return "invalid"
             if source.proton_energy_model == "constant" and (
                 not np.isclose(
                     product.proton_energy_constant,
@@ -168,6 +196,7 @@ def process_orbit(
     orbit,
     input_directory,
     output_directory,
+    conductance_model,
     software_version,
 ):
     """Calculate and save one detector-space conductance orbit."""
@@ -176,6 +205,7 @@ def process_orbit(
     try:
         product = ConductanceDetector(
             source,
+            conductance_model=conductance_model,
             software_version=software_version,
         )
         output = output_directory / f"or_{orbit:04d}.nc"
@@ -192,7 +222,7 @@ def process_orbit(
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        description="Create Robinson conductance on WIC detector pixels."
+        description="Create conductance on WIC detector pixels."
     )
     parser.add_argument(
         "--base-input", "--base",
@@ -221,7 +251,7 @@ def parse_args(argv=None):
     )
     parser.add_argument(
         "--conductance-model",
-        choices=(CONDUCTANCE_MODEL,),
+        choices=CONDUCTANCE_MODELS,
         default=CONDUCTANCE_MODEL,
     )
     parser.add_argument(
@@ -296,6 +326,7 @@ def main(argv=None):
         process_orbit,
         input_directory=input_directory,
         output_directory=output_directory,
+        conductance_model=args.conductance_model,
         software_version=software_version,
     )
     if args.workers > 1:

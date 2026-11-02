@@ -2,11 +2,20 @@
 
 #%% Imports
 
+from functools import lru_cache
+from hashlib import sha256
+from importlib.metadata import version
+from inspect import signature
 from pathlib import Path
 
 import numpy as np
 from icreader import open_product
-from icphysics import robinson_conductance
+from icphysics import (
+    FANG_2025_ENERGY_RANGE_KEV,
+    FANG_2025_MODEL_DOI,
+    fang_2025_conductance_uncertainty,
+    robinson_conductance,
+)
 from netCDF4 import Dataset, date2num
 
 from .fuvdetector import SOURCE_TIME_DECODING, source_identity
@@ -24,9 +33,31 @@ from .precipitationdetector import (
 
 SCHEMA_VERSION = 3
 CONDUCTANCE_MODEL = "robinson"
-CONDUCTANCE_UNCERTAINTY_METHOD = (
+CONDUCTANCE_MODELS = ("robinson", "fang")
+ROBINSON_CONDUCTANCE_UNCERTAINTY_METHOD = (
     "first-order Robinson propagation of Product-2 dE0, dFe, and varE0Fe; "
     "at Fe=0, dP and dH are one-sided excursions from zero to dFe"
+)
+FANG_CONDUCTANCE_UNCERTAINTY_METHOD = (
+    "analytical first-order Fang 2025 propagation of Product-2 dE0, dFe, "
+    "and varE0Fe with magnetic-field uncertainty fixed to zero"
+)
+CONDUCTANCE_UNCERTAINTY_METHOD = ROBINSON_CONDUCTANCE_UNCERTAINTY_METHOD
+FANG_LOW_ENERGY_POLICY = "clip"
+FANG_MAGNETIC_FIELD_HEIGHT_KM = 150.0
+FANG_MAGNETIC_FIELD_CHUNK_SIZE = 32768
+FANG_METADATA_ATTRIBUTES = (
+    "fang_model_doi",
+    "fang_energy_domain_keV",
+    "fang_energy_definition",
+    "fang_low_energy_policy",
+    "fang_magnetic_field_model",
+    "fang_magnetic_field_package_version",
+    "fang_magnetic_field_coefficients_sha256",
+    "fang_magnetic_field_height_km",
+    "fang_magnetic_field_epoch_policy",
+    "fang_magnetic_field_coordinate_mapping",
+    "fang_magnetic_field_uncertainty_method",
 )
 
 TIME_FIELDS = (
@@ -45,6 +76,126 @@ PRECIPITATION_FIELDS = (
     "Ep_model", "Ep", "dEp", "Fp", "dFp",
     "E0", "dE0", "Fe", "dFe", "varE0Fe",
 )
+
+
+#%% Fang magnetic field and provenance
+
+def _python_datetime(value):
+    """Return a timezone-free Python datetime accepted by Apex and ppigrf."""
+
+    if isinstance(value, np.datetime64):
+        return value.astype("datetime64[us]").astype(object)
+    if hasattr(value, "to_pydatetime"):
+        return value.to_pydatetime()
+    return value
+
+
+def fang_magnetic_field_at_150km(
+    time,
+    mlat,
+    mlon,
+    source_height_km,
+    valid=None,
+    chunk_size=FANG_MAGNETIC_FIELD_CHUNK_SIZE,
+):
+    """Map Modified-Apex footprints to 150 km and evaluate IGRF magnitude."""
+
+    from apexpy import Apex
+    import ppigrf
+
+    mlat = np.asarray(mlat, dtype=float)
+    mlon = np.asarray(mlon, dtype=float)
+    if mlat.shape != mlon.shape or mlat.ndim != 3:
+        raise ValueError("mlat and mlon must share (time, row, column) shape")
+    if len(time) != mlat.shape[0]:
+        raise ValueError("time length must match detector frames")
+    if not np.isfinite(source_height_km) or source_height_km <= 0:
+        raise ValueError("source_height_km must be positive and finite")
+    if chunk_size < 1:
+        raise ValueError("chunk_size must be positive")
+
+    selected = np.isfinite(mlat) & np.isfinite(mlon)
+    if valid is not None:
+        valid = np.asarray(valid, dtype=bool)
+        if valid.shape != mlat.shape:
+            raise ValueError("valid must match detector geometry")
+        selected &= valid
+
+    latitude = np.full(mlat.shape, np.nan)
+    longitude = np.full(mlat.shape, np.nan)
+    field = np.full(mlat.shape, np.nan)
+    for frame in range(mlat.shape[0]):
+        indices = np.flatnonzero(selected[frame].ravel())
+        if indices.size == 0:
+            continue
+        epoch = _python_datetime(time[frame])
+        apex = Apex(date=epoch, refh=float(source_height_km))
+        frame_mlat = mlat[frame].ravel()
+        frame_mlon = mlon[frame].ravel()
+        frame_latitude = latitude[frame].ravel()
+        frame_longitude = longitude[frame].ravel()
+        frame_field = field[frame].ravel()
+
+        for start in range(0, indices.size, chunk_size):
+            chunk = indices[start:start + chunk_size]
+            geographic_latitude, geographic_longitude, _ = apex.apex2geo(
+                frame_mlat[chunk],
+                frame_mlon[chunk],
+                FANG_MAGNETIC_FIELD_HEIGHT_KM,
+            )
+            east, north, up = ppigrf.igrf(
+                geographic_longitude,
+                geographic_latitude,
+                FANG_MAGNETIC_FIELD_HEIGHT_KM,
+                epoch,
+            )
+            magnitude = np.sqrt(
+                np.asarray(east).reshape(-1)**2
+                + np.asarray(north).reshape(-1)**2
+                + np.asarray(up).reshape(-1)**2
+            ) / 1000.0
+            frame_latitude[chunk] = geographic_latitude
+            frame_longitude[chunk] = geographic_longitude
+            frame_field[chunk] = magnitude
+
+    return latitude, longitude, field
+
+
+@lru_cache(maxsize=1)
+def fang_conductance_metadata():
+    """Return reproducible Fang and IGRF metadata for Product 3."""
+
+    import ppigrf
+
+    coefficients = Path(signature(ppigrf.igrf).parameters["coeff_fn"].default)
+    return {
+        "fang_model_doi": FANG_2025_MODEL_DOI,
+        "fang_energy_domain_keV": (
+            f"{FANG_2025_ENERGY_RANGE_KEV[0]:g}--"
+            f"{FANG_2025_ENERGY_RANGE_KEV[1]:g}"
+        ),
+        "fang_energy_definition": (
+            "Maxwellian average electron energy; twice Fang characteristic "
+            "energy"
+        ),
+        "fang_low_energy_policy": FANG_LOW_ENERGY_POLICY,
+        "fang_magnetic_field_model": coefficients.stem,
+        "fang_magnetic_field_package_version": version("ppigrf"),
+        "fang_magnetic_field_coefficients_sha256": sha256(
+            coefficients.read_bytes()
+        ).hexdigest(),
+        "fang_magnetic_field_height_km": FANG_MAGNETIC_FIELD_HEIGHT_KM,
+        "fang_magnetic_field_epoch_policy": (
+            "each IMAGE frame time for both Apex and IGRF"
+        ),
+        "fang_magnetic_field_coordinate_mapping": (
+            "Product-2 Modified-Apex latitude/longitude at reference_height_km "
+            "mapped along the Apex field line to 150 km geographic coordinates"
+        ),
+        "fang_magnetic_field_uncertainty_method": (
+            "not modelled; magnetic_field_std=0"
+        ),
+    }
 
 
 #%% Product-2 loading
@@ -147,22 +298,29 @@ def load_precipitation_detector(filename):
 #%% Detector conductance
 
 class ConductanceDetector:
-    """Apply Robinson conductance to one detector Product-2 orbit."""
+    """Apply a selected conductance model to one detector Product-2 orbit."""
 
     def __init__(
         self,
         precipitation_detector,
         *,
+        conductance_model=CONDUCTANCE_MODEL,
         software_version="unrecorded experimental worktree",
     ):
+        if conductance_model not in CONDUCTANCE_MODELS:
+            raise ValueError(
+                f"conductance_model must be one of {CONDUCTANCE_MODELS}"
+            )
         precipitation = load_precipitation_detector(precipitation_detector)
 
         self.product_type = "conductance_detector"
         self.representation = "detector"
         self.schema_version = SCHEMA_VERSION
-        self.conductance_model = CONDUCTANCE_MODEL
+        self.conductance_model = conductance_model
         self.conductance_uncertainty_method = (
-            CONDUCTANCE_UNCERTAINTY_METHOD
+            ROBINSON_CONDUCTANCE_UNCERTAINTY_METHOD
+            if conductance_model == "robinson"
+            else FANG_CONDUCTANCE_UNCERTAINTY_METHOD
         )
         self.software_version = str(software_version)
 
@@ -273,12 +431,67 @@ class ConductanceDetector:
         ):
             setattr(self, name, np.asarray(precipitation[name]).copy())
 
-        # Apply the forward model only once on the stored precipitation state.
-        result = robinson_conductance(
-            self.E0, self.Fe, self.dE0, self.dFe, self.varE0Fe
-        )
+        # Apply the selected forward model once on the stored precipitation.
+        if conductance_model == "robinson":
+            result = robinson_conductance(
+                self.E0, self.Fe, self.dE0, self.dFe, self.varE0Fe
+            )
+            output = {
+                "P": result["P"],
+                "H": result["H"],
+                "dP": result["dP"],
+                "dH": result["dH"],
+            }
+            uncertainty_valid = (
+                np.isfinite(output["dP"]) & np.isfinite(output["dH"])
+            )
+        else:
+            for name, value in fang_conductance_metadata().items():
+                setattr(self, name, value)
+            (
+                self.fang_magnetic_latitude_150km,
+                self.fang_magnetic_longitude_150km,
+                self.fang_magnetic_field_150km_microtesla,
+            ) = fang_magnetic_field_at_150km(
+                self.time,
+                self.mlat,
+                self.mlon,
+                self.reference_height_km,
+                valid=self.method_valid,
+            )
+            result = fang_2025_conductance_uncertainty(
+                self.E0,
+                self.Fe,
+                self.fang_magnetic_field_150km_microtesla,
+                mean_energy_std=self.dE0,
+                energy_flux_std=self.dFe,
+                magnetic_field_std=np.zeros(self.shape),
+                energy_flux_covariance=self.varE0Fe,
+                low_energy_policy=FANG_LOW_ENERGY_POLICY,
+            )
+            output = {
+                "P": result["P"],
+                "H": result["H"],
+                "dP": result["P_std"],
+                "dH": result["H_std"],
+            }
+            uncertainty_valid = result["uncertainty_valid"]
+            self.fang_evaluated_energy = np.asarray(
+                result["evaluated_energy"], dtype=float
+            )
+            self.fang_within_model_domain = np.asarray(
+                result["within_model_domain"], dtype=bool
+            )
+            self.fang_energy_clipped_low = np.asarray(
+                result["energy_clipped_low"], dtype=bool
+            )
+            self.fang_uncertainty_straddles_low_energy_boundary = np.asarray(
+                result["uncertainty_straddles_low_energy_boundary"],
+                dtype=bool,
+            )
+
         for name in ("P", "H", "dP", "dH"):
-            values = np.asarray(result[name], dtype=float)
+            values = np.asarray(output[name], dtype=float)
             if values.shape != self.shape:
                 raise ValueError(f"{name} must have shape {self.shape}")
             setattr(self, name, values)
@@ -288,8 +501,7 @@ class ConductanceDetector:
         )
         self.conductance_uncertainty_valid = (
             self.conductance_valid
-            & np.isfinite(self.dP)
-            & np.isfinite(self.dH)
+            & uncertainty_valid
         )
         self.P[~self.conductance_valid] = np.nan
         self.H[~self.conductance_valid] = np.nan
@@ -332,6 +544,9 @@ class ConductanceDetector:
             nc.conductance_uncertainty_method = (
                 self.conductance_uncertainty_method
             )
+            if self.conductance_model == "fang":
+                for name in FANG_METADATA_ATTRIBUTES:
+                    nc.setncattr(name, getattr(self, name))
             nc.precipitation_method = self.precipitation_method
             if self.precipitation_method in MODELED_ELECTRON_ENERGY_METHODS:
                 for name in ELECTRON_METADATA_ATTRIBUTES:
@@ -462,6 +677,25 @@ class ConductanceDetector:
                 "dP": (self.dP, "S"),
                 "dH": (self.dH, "S"),
             }
+            if self.conductance_model == "fang":
+                fields.update({
+                    "fang_magnetic_latitude_150km": (
+                        self.fang_magnetic_latitude_150km,
+                        "degrees_north",
+                    ),
+                    "fang_magnetic_longitude_150km": (
+                        self.fang_magnetic_longitude_150km,
+                        "degrees_east",
+                    ),
+                    "fang_magnetic_field_150km_microtesla": (
+                        self.fang_magnetic_field_150km_microtesla,
+                        "microtesla",
+                    ),
+                    "fang_evaluated_energy": (
+                        self.fang_evaluated_energy,
+                        "keV",
+                    ),
+                })
             for name, (values, units) in fields.items():
                 dtype = "f8" if name in (
                     "glat", "glon", "mlat", "mlon", "mlt"
@@ -486,3 +720,22 @@ class ConductanceDetector:
                     name, "i1", dimensions, zlib=True
                 )
                 variable[:] = getattr(self, name).astype(np.int8)
+
+            if self.conductance_model == "fang":
+                fang_flags = {
+                    "fang_within_model_domain": (
+                        "original energy is within the Fang 1--20 keV domain"
+                    ),
+                    "fang_energy_clipped_low": (
+                        "original energy is positive and below 1 keV"
+                    ),
+                    "fang_uncertainty_straddles_low_energy_boundary": (
+                        "one-standard-deviation energy interval crosses 1 keV"
+                    ),
+                }
+                for name, description in fang_flags.items():
+                    variable = nc.createVariable(
+                        name, "i1", dimensions, zlib=True
+                    )
+                    variable[:] = getattr(self, name).astype(np.int8)
+                    variable.long_name = description

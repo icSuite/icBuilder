@@ -20,9 +20,19 @@ from icbuilder.detectorcs import (
     build_precipitation_cs_product,
 )
 from icbuilder.grids import DETECTOR_CS_GRID_ID
-from icbuilder.precipitationdetector import ELECTRON_METADATA_ATTRIBUTES
+from icbuilder.precipitationdetector import (
+    ELECTRON_METADATA_ATTRIBUTES,
+    MODELED_ELECTRON_ENERGY_METHODS,
+)
 from icbuilder.precipitationcs import SCHEMA_VERSION as PRECIPITATION_CS_SCHEMA_VERSION
-from icbuilder.conductancecs import SCHEMA_VERSION as CONDUCTANCE_CS_SCHEMA_VERSION
+from icbuilder.conductancedetector import (
+    CONDUCTANCE_MODELS,
+    FANG_METADATA_ATTRIBUTES,
+)
+from icbuilder.conductancecs import (
+    FANG_MEAN_FIELDS,
+    SCHEMA_VERSION as CONDUCTANCE_CS_SCHEMA_VERSION,
+)
 
 
 #%% Pipeline defaults
@@ -43,7 +53,7 @@ def _common_cs_status(product, product_type, schema_version):
     ):
         return "invalid"
     method = product.attrs.get("method", product.attrs.get("precipitation_method"))
-    if method == "hardy":
+    if method in MODELED_ELECTRON_ENERGY_METHODS:
         for name in ELECTRON_METADATA_ATTRIBUTES:
             if name not in product.attrs:
                 return "invalid"
@@ -73,7 +83,7 @@ def precipitation_cs_file_status(filename, source_precipitation):
             )
             if status != "complete":
                 return status
-            if source.method == "hardy":
+            if source.method in MODELED_ELECTRON_ENERGY_METHODS:
                 if product.method != source.method:
                     return "mismatch"
                 for name in ELECTRON_METADATA_ATTRIBUTES:
@@ -122,12 +132,33 @@ def conductance_cs_file_status(
             )
             if status != "complete":
                 return status
-            if source.precipitation_method == "hardy":
+            if product.conductance_model != source.conductance_model:
+                return "mismatch"
+            if source.precipitation_method in MODELED_ELECTRON_ENERGY_METHODS:
                 if product.precipitation_method != source.precipitation_method:
                     return "mismatch"
                 for name in ELECTRON_METADATA_ATTRIBUTES:
                     if product.attrs[name] != source.attrs[name]:
                         return "mismatch"
+            if source.conductance_model == "fang":
+                for name in FANG_METADATA_ATTRIBUTES:
+                    if name not in product.attrs:
+                        return "invalid"
+                    if product.attrs[name] != source.attrs[name]:
+                        return "mismatch"
+                for name in (
+                    *FANG_MEAN_FIELDS,
+                    "fang_within_model_domain_fraction",
+                    "fang_energy_clipped_low_fraction",
+                    "fang_uncertainty_straddles_low_energy_boundary_fraction",
+                    "fang_within_model_domain_any",
+                    "fang_energy_clipped_low_any",
+                    "fang_uncertainty_straddles_low_energy_boundary_any",
+                ):
+                    if not hasattr(product, name):
+                        return "invalid"
+                    if getattr(product, name).shape != product.shape:
+                        return "invalid"
             if (
                 product.source_conductance_detector != str(source_conductance)
                 or int(product.attrs["source_conductance_detector_size_bytes"])
@@ -294,7 +325,9 @@ def parse_args(argv=None):
     parser.add_argument(
         "--retrieval-label", default=DEFAULT_RETRIEVAL_LABEL
     )
-    parser.add_argument("--conductance-model", default="robinson")
+    parser.add_argument(
+        "--conductance-model", choices=CONDUCTANCE_MODELS, default="robinson"
+    )
     parser.add_argument(
         "--precipitation-input-folder", default="precipitation_detector"
     )
@@ -323,8 +356,8 @@ def parse_args(argv=None):
         "--conductance-only",
         action="store_true",
         help=(
-            "Write conductance_cs from Product 3 while requiring an existing "
-            "matching precipitation_cs product."
+            "Write conductance_cs from detector Product 3 without requiring "
+            "or writing precipitation_cs."
         ),
     )
     return parser.parse_args(argv)

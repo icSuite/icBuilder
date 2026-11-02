@@ -82,12 +82,14 @@ def kp_series():
     }
 
 
-def write_detector_pair(base, orbit=1, nonlinear=False):
+def write_detector_pair(
+    base, orbit=1, nonlinear=False, conductance_model="robinson"
+):
     precipitation_directory = (
         base / "precipitation_detector" / RETRIEVAL_LABEL
     )
     conductance_directory = (
-        base / "conductance_detector" / RETRIEVAL_LABEL / "robinson"
+        base / "conductance_detector" / RETRIEVAL_LABEL / conductance_model
     )
     fuv_directory = base / "fuv_detector" / BS2D_PREPROCESSING_LABEL
     precipitation_directory.mkdir(parents=True, exist_ok=True)
@@ -129,9 +131,58 @@ def write_detector_pair(base, orbit=1, nonlinear=False):
     conductance_filename = conductance_directory / f"or_{orbit:04d}.nc"
     ConductanceDetector(
         precipitation_filename,
+        conductance_model=conductance_model,
         software_version="product3-test",
     ).to_nc(conductance_filename)
     return precipitation_filename, conductance_filename
+
+
+def test_fang_conductance_reduces_to_cs_with_provenance(tmp_path, monkeypatch):
+    precipitation_source, conductance_source = write_detector_pair(
+        tmp_path / "input", conductance_model="fang"
+    )
+    precipitation, conductance = build_detector_cs_products(
+        precipitation_source,
+        conductance_source,
+        software_version="cs-test",
+    )
+
+    assert precipitation.method_valid.any()
+    assert conductance.conductance_model == "fang"
+    assert conductance.conductance_valid.any()
+    assert np.isfinite(
+        conductance.fang_magnetic_field_150km_microtesla[
+            conductance.conductance_valid
+        ]
+    ).all()
+
+    output = tmp_path / "fang_conductance_cs.nc"
+    conductance.to_nc(output)
+    assert ORBIT_SCRIPT.conductance_cs_file_status(
+        output, conductance_source
+    ) == "complete"
+    with Dataset(output) as nc:
+        assert nc.conductance_model == "fang"
+        assert nc.fang_low_energy_policy == "clip"
+        assert nc["fang_evaluated_energy"].shape == (2, 46, 46)
+        assert nc["fang_energy_clipped_low_fraction"].units == "1"
+        assert nc["fang_uncertainty_straddles_low_energy_boundary_any"].dtype == np.int8
+
+    monkeypatch.setattr(ORBIT_SCRIPT, "current_revision", lambda path: "test")
+    arguments = [
+        "--base-input", str(tmp_path / "input"),
+        "--base-output", str(tmp_path / "output"),
+        "--conductance-model", "fang",
+        "--conductance-only",
+        "--orbit", "1",
+    ]
+    assert ORBIT_SCRIPT.main(arguments) == [(1, 2)]
+    pipeline_output = (
+        tmp_path / "output" / "conductance_cs" / DETECTOR_CS_GRID_ID
+        / RETRIEVAL_LABEL / "fang" / "or_0001.nc"
+    )
+    assert pipeline_output.is_file()
+    assert ORBIT_SCRIPT.main(arguments) == []
 
 
 def test_paired_products_share_mapping_and_round_trip(tmp_path, monkeypatch):
