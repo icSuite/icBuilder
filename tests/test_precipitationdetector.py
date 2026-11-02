@@ -23,6 +23,7 @@ from icbuilder.precipitationdetector import (
     SCHEMA_VERSION,
     smooth_detector_sensor,
 )
+import icbuilder.precipitationdetector as precipitationdetector_module
 
 
 SCRIPT = (
@@ -325,6 +326,62 @@ def test_hardy_energy_uses_each_detector_pixels_mlat_and_mlt(tmp_path):
         & (precipitation.Ep[np.isfinite(precipitation.Ep)] <= 46.7)
     )
     assert "approximated" in precipitation.proton_energy_coordinate_note
+
+
+def test_product2_exposes_flux_weighted_collapsed_zhang_paxton(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "fuv_detector.nc"
+    write_fuv_detector(source)
+
+    def fixed_collapsed_zp(wic, dwic, kp, mlt):
+        shape = np.broadcast_shapes(
+            np.shape(wic), np.shape(dwic), np.shape(kp), np.shape(mlt)
+        )
+        valid = np.broadcast_to(np.asarray(wic) > 0, shape)
+        return {
+            "E0": np.where(valid, 2.5, np.nan),
+            "dE0": np.where(valid, 0.4, np.nan),
+            "Fe": np.where(valid, 1.2, np.nan),
+            "dFe": np.where(valid, 0.2, np.nan),
+            "varE0Fe": np.where(valid, -0.01, np.nan),
+            "E0_response_range_flag": np.where(valid, 0, -1).astype(np.int8),
+        }
+
+    monkeypatch.setattr(
+        precipitationdetector_module,
+        "precipitation_from_collapsed_zhang_paxton",
+        fixed_collapsed_zp,
+    )
+    product = PrecipitationDetector(
+        source,
+        kp_series=kp_series(),
+        method="zhang_paxton",
+        proton_energy_model="constant",
+        proton_energy=2.0,
+        software_version="product2-test",
+    )
+    output = tmp_path / "precipitation_zp.nc"
+    ORBIT_SCRIPT.save_precipitation_detector(product, output)
+
+    assert product.method_valid.any()
+    np.testing.assert_allclose(product.E0[product.method_valid], 2.5)
+    np.testing.assert_allclose(product.dE0[product.method_valid], 0.4)
+    assert product.electron_energy_model == "zhang_paxton_q_weighted_collapsed"
+    assert "not predictive" in product.electron_energy_uncertainty_method
+    assert ORBIT_SCRIPT.precipitation_detector_file_status(
+        output,
+        source,
+        "constant",
+        2.0,
+        0.0,
+        method="zhang_paxton",
+    ) == "complete"
+
+    with Dataset(output) as nc:
+        assert nc.method == "zhang_paxton"
+        assert nc.electron_energy_model == "zhang_paxton_q_weighted_collapsed"
+        assert "E0_response_range_flag" in nc.variables
 
 
 def test_gaussian_smoothing_propagates_counts_variance_and_quality():
@@ -696,6 +753,14 @@ def test_orbit_script_defaults_to_hardy_image_ratio():
     assert args.base_output is None
     assert args.input_folder == f"fuv_detector/{BS2D_PREPROCESSING_LABEL}"
     assert ORBIT_SCRIPT.PRECIPITATION_METHOD == "image_ratio"
+
+
+def test_orbit_script_accepts_collapsed_zhang_paxton_method():
+    args = ORBIT_SCRIPT.parse_args([
+        "--precipitation-method", "zhang_paxton"
+    ])
+
+    assert args.precipitation_method == "zhang_paxton"
 
 
 def test_orbit_script_supports_separate_bases_and_parallel_runs(

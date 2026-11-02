@@ -22,6 +22,7 @@ from .fuvdetector import source_identity
 from .grids import DETECTOR_CS_GRID_ID
 from .precipitationdetector import (
     COUNT_UNCERTAINTY_MODE,
+    MODELED_ELECTRON_ENERGY_METHODS,
     PRECIPITATION_METHODS,
     ELECTRON_METADATA_ATTRIBUTES,
     SCHEMA_VERSION as DETECTOR_SCHEMA_VERSION,
@@ -111,7 +112,7 @@ class PrecipitationCS:
         self.time_fields = read_common_time_fields(source)
 
         self.method = source.method
-        if self.method == "hardy":
+        if self.method in MODELED_ELECTRON_ENERGY_METHODS:
             for name in ELECTRON_METADATA_ATTRIBUTES:
                 setattr(self, name, source.attrs[name])
             self.E0_response_range_fraction = np.full(self.shape, np.nan)
@@ -256,7 +257,7 @@ class PrecipitationCS:
         self.method_uncertainty_valid[frame] = uncertainty_coverage > 0
         self.Ep_clipping_fraction[frame] = clipping_fraction
         self.Ep_clipping_any[frame] = clipping_any
-        if self.method == "hardy":
+        if self.method in MODELED_ELECTRON_ENERGY_METHODS:
             fraction, any_flag = reduce_flag_fraction(
                 np.asarray(source.read("E0_response_range_flag", frame), dtype=np.int8) > 0,
                 method_valid, mapping, output_shape
@@ -309,7 +310,7 @@ class PrecipitationCS:
                 )
                 getattr(self, name)[frame] = reduced
 
-        if self.method == "hardy":
+        if self.method in MODELED_ELECTRON_ENERGY_METHODS:
             response_flag = np.asarray(source.read("E0_response_range_flag"), dtype=np.int8) > 0
         clipping_flag = np.asarray(
             source.read("Ep_clipping_flag"), dtype=bool
@@ -335,7 +336,7 @@ class PrecipitationCS:
             self.method_uncertainty_valid[frame] = uncertainty_coverage > 0
             self.Ep_clipping_fraction[frame] = clipping_fraction
             self.Ep_clipping_any[frame] = clipping_any
-            if self.method == "hardy":
+            if self.method in MODELED_ELECTRON_ENERGY_METHODS:
                 fraction, any_flag = reduce_flag_fraction(
                     response_flag[frame], method_valid[frame], mapping, output_shape
                 )
@@ -355,7 +356,7 @@ class PrecipitationCS:
             nc.binning_method = BINNING_METHOD
             nc.uncertainty_method = UNCERTAINTY_METHOD
             nc.method = self.method
-            if self.method == "hardy":
+            if self.method in MODELED_ELECTRON_ENERGY_METHODS:
                 for name in ELECTRON_METADATA_ATTRIBUTES:
                     nc.setncattr(name, getattr(self, name))
             nc.count_source = self.count_source
@@ -422,7 +423,7 @@ class PrecipitationCS:
                 nc.setncattr(f"kp_{name}", value)
 
             dimensions = ("time", "dim1", "dim2")
-            if self.method == "hardy":
+            if self.method in MODELED_ELECTRON_ENERGY_METHODS:
                 fraction = nc.createVariable("E0_response_range_fraction", "f4", dimensions, zlib=True)
                 fraction[:] = self.E0_response_range_fraction
                 fraction.units = "1"

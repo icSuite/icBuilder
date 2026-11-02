@@ -150,10 +150,29 @@ python scripts/pipeline/make_detector_cs_orbit_files.py \
     --orbit 85 --workers 1
 ```
 
+The detector Product-2 runner also exposes the flux-weighted collapsed
+Zhang--Paxton model:
+
+```bash
+python scripts/pipeline/make_precipitation_detector_orbit_files.py \
+    --base-input /path/to/input --base-output /path/to/output \
+    --precipitation-method zhang_paxton --proton-energy-model hardy \
+    --retrieval-label CollapsedZhangPaxtonQWeightedElectron_HardyProton \
+    --workers 1
+```
+
+This uses the spherical-area-times-energy-flux-weighted Zhang--Paxton energy
+over the contiguous `Q > 0.05 mW m-2` interval between 50 and 90 degrees
+MLAT. Its `dE0` is the discarded latitude-profile RMS spread, not a calibrated
+predictive uncertainty. SI13 remains diagnostic and WIC supplies the observed
+electron energy flux.
+
 Without an explicit label, the Hardy Product-2 runner derives
 `HardyElectron_HardyProton_smoothed_wic0p8_si120_si131p2` (constant protons
 instead produce `HardyElectron_ConstantProton...`). Existing image-ratio labels
-retain their `IR_...` form. Restart validation rejects changes in electron
+retain their `IR_...` form. Zhang--Paxton derives
+`CollapsedZhangPaxtonQWeightedElectron_HardyProton...`. Restart validation
+rejects changes in electron
 selection, electron model provenance, proton selection and count preprocessing.
 The bin-first `scripts/pipeline/make_precipitation_orbit_files.py` also accepts
 `--precipitation-method hardy`; select a dedicated `--output-folder`.

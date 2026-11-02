@@ -17,6 +17,7 @@ from icphysics import (
     hardy_ion_precipitation,
     precipitation_from_ratio,
     precipitation_from_collapsed_hardy_effective,
+    precipitation_from_collapsed_zhang_paxton,
     precipitation_from_hardy_effective,
     ELECTRON_RESPONSE_ENERGY_RANGE,
     proton_correct_images,
@@ -53,11 +54,12 @@ PREPROCESSING_METADATA_ATTRIBUTES = (
     "method_quality_weight_spatial_propagation",
 )
 PRECIPITATION_METHOD = "image_ratio"
-PRECIPITATION_METHODS = ("image_ratio", "hardy")
+PRECIPITATION_METHODS = ("image_ratio", "hardy", "zhang_paxton")
+MODELED_ELECTRON_ENERGY_METHODS = ("hardy", "zhang_paxton")
 DEFAULT_HARDY_ELECTRON_ENERGY_MODEL = "effective"
 HARDY_ELECTRON_ENERGY_MODELS = ("effective", "collapsed_effective")
 
-# These optional attributes travel with Hardy energy through all representations.
+# These optional attributes travel with modeled energy through all representations.
 ELECTRON_METADATA_ATTRIBUTES = (
     "electron_energy_model", "electron_energy_source",
     "electron_coefficient_source", "electron_kp_policy", "electron_model_domain",
@@ -118,6 +120,50 @@ def hardy_electron_metadata(energy_model, coordinate_note):
         )
     }
 
+
+def zhang_paxton_electron_metadata():
+    """Scientific provenance for flux-weighted collapsed ZP retrieval."""
+
+    return {
+        "electron_energy_model": "zhang_paxton_q_weighted_collapsed",
+        "electron_energy_source": (
+            "Zhang and Paxton (2008) GUVI Kp-dependent empirical model "
+            "via ZhangPaxton2008"
+        ),
+        "electron_coefficient_source": "ZhangPaxton2008 package",
+        "electron_kp_policy": (
+            "definitive GFZ Kp assigned by icBuilder and rounded to nearest "
+            "0.01 for cached model evaluation"
+        ),
+        "electron_model_domain": (
+            "northern magnetic latitude 50–90 degrees"
+        ),
+        "electron_energy_coordinate_note": (
+            "Zhang--Paxton latitude is collapsed internally; Product-1 "
+            "Modified Apex MLT at 130 km supplies magnetic local time"
+        ),
+        "electron_energy_uncertainty_method": (
+            "dE0 is the area-times-energy-flux-weighted RMS latitude spread "
+            "within the selected collapse interval; it is structural spread, "
+            "not predictive model uncertainty"
+        ),
+        "electron_energy_derivation": (
+            "spherical-area-times-Zhang--Paxton-energy-flux weighted mean E0"
+        ),
+        "electron_energy_collapse": (
+            "contiguous interval around peak modeled energy flux where "
+            "Q > 0.05 mW m-2; MLAT 50–90 degrees at 0.01-degree spacing; "
+            "periodic MLT profile at 0.1-hour spacing"
+        ),
+        "electron_response_energy_min": ELECTRON_RESPONSE_ENERGY_RANGE[0],
+        "electron_response_energy_max": ELECTRON_RESPONSE_ENERGY_RANGE[1],
+        "electron_response_out_of_range_policy": (
+            "retain raw Zhang--Paxton mean energy; hold WIC response at "
+            "nearest table endpoint; flag 0=in_range, 1=below, 2=above, "
+            "-1=unavailable"
+        ),
+    }
+
 PROTON_ENERGY_MODELS = ("hardy", "constant")
 COUNT_SOURCES = ("background_subtracted", "unsubtracted")
 DEFAULT_WIC_SMOOTHING_WIDTH = 0.8
@@ -145,6 +191,11 @@ COLLAPSED_HARDY_COORDINATE_NOTE = (
     "Hardy latitude profile is collapsed internally in corrected geomagnetic "
     "coordinates; Product-1 Modified Apex MLT at 130 km approximates the "
     "source magnetic local time"
+)
+ZHANG_PAXTON_UNSUBTRACTED_QUALITY_WEIGHT_METHOD = (
+    "uniform weight on WIC and SI12 detector count support independently of "
+    "collapsed-Zhang--Paxton retrieval success; diagnostic SI13 and "
+    "background-fit dgweight are not used"
 )
 SPATIAL_SMOOTHING_ORDER = (
     "enabled sensors are Gaussian-smoothed independently on their Product-1 "
@@ -528,6 +579,9 @@ class PrecipitationDetector:
                 hardy_electron_energy_model, coordinate_note
             ).items():
                 setattr(self, name, value)
+        elif method == "zhang_paxton":
+            for name, value in zhang_paxton_electron_metadata().items():
+                setattr(self, name, value)
         self.count_source = count_source
         self.proton_flux_source = PROTON_FLUX_SOURCE
         self.proton_energy_model = proton_energy_model
@@ -626,7 +680,10 @@ class PrecipitationDetector:
             self.si12_valid &= self.si12_unsubtracted_valid
             self.si13_valid &= self.si13_unsubtracted_valid
             self.method_quality_weight_method = (
-                HARDY_UNSUBTRACTED_QUALITY_WEIGHT_METHOD if method == "hardy"
+                HARDY_UNSUBTRACTED_QUALITY_WEIGHT_METHOD
+                if method == "hardy"
+                else ZHANG_PAXTON_UNSUBTRACTED_QUALITY_WEIGHT_METHOD
+                if method == "zhang_paxton"
                 else UNSUBTRACTED_QUALITY_WEIGHT_METHOD
             )
 
@@ -748,7 +805,7 @@ class PrecipitationDetector:
                 self.wic_corrected, dwic_for_ratio,
                 self.si13_corrected, dsi13_for_ratio
             )
-        else:
+        elif method == "hardy":
             if self.hardy_electron_energy_model == "effective":
                 result = precipitation_from_hardy_effective(
                     self.wic_corrected, self.dwic_corrected,
@@ -765,6 +822,24 @@ class PrecipitationDetector:
                 self.dR = np.sqrt(
                     (self.dwic_corrected / self.si13_corrected)**2
                     + (self.wic_corrected * self.dsi13_corrected / self.si13_corrected**2)**2
+                )
+            self.R[~np.isfinite(self.R)] = np.nan
+            self.dR[~np.isfinite(self.dR)] = np.nan
+        else:
+            result = precipitation_from_collapsed_zhang_paxton(
+                self.wic_corrected,
+                self.dwic_corrected,
+                self.kp[:, None, None],
+                self.mlt,
+            )
+            with np.errstate(divide="ignore", invalid="ignore"):
+                self.R = self.wic_corrected / self.si13_corrected
+                self.dR = np.sqrt(
+                    (self.dwic_corrected / self.si13_corrected)**2
+                    + (
+                        self.wic_corrected * self.dsi13_corrected
+                        / self.si13_corrected**2
+                    )**2
                 )
             self.R[~np.isfinite(self.R)] = np.nan
             self.dR[~np.isfinite(self.dR)] = np.nan
@@ -847,10 +922,11 @@ class PrecipitationDetector:
             nc.representation = self.representation
             nc.schema_version = self.schema_version
             nc.method = self.method
-            if self.method == "hardy":
-                nc.hardy_electron_energy_model = (
-                    self.hardy_electron_energy_model
-                )
+            if self.method in MODELED_ELECTRON_ENERGY_METHODS:
+                if self.method == "hardy":
+                    nc.hardy_electron_energy_model = (
+                        self.hardy_electron_energy_model
+                    )
                 for name in ELECTRON_METADATA_ATTRIBUTES:
                     nc.setncattr(name, getattr(self, name))
             nc.count_source = self.count_source
@@ -1007,7 +1083,7 @@ class PrecipitationDetector:
                 variable = nc.createVariable(name, "i1", dimensions, zlib=True)
                 variable[:] = getattr(self, name).astype(np.int8)
 
-            if self.method == "hardy":
+            if self.method in MODELED_ELECTRON_ENERGY_METHODS:
                 flag = nc.createVariable("E0_response_range_flag", "i1", dimensions, zlib=True)
                 flag[:] = self.E0_response_range_flag
                 flag.flag_values = np.asarray([-1, 0, 1, 2], dtype=np.int8)

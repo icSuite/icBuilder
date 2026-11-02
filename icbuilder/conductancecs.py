@@ -24,7 +24,11 @@ from .detectorcs import (
 )
 from .fuvdetector import source_identity
 from .grids import DETECTOR_CS_GRID_ID
-from .precipitationdetector import COUNT_UNCERTAINTY_MODE, ELECTRON_METADATA_ATTRIBUTES
+from .precipitationdetector import (
+    COUNT_UNCERTAINTY_MODE,
+    ELECTRON_METADATA_ATTRIBUTES,
+    MODELED_ELECTRON_ENERGY_METHODS,
+)
 
 
 #%% Product contract
@@ -100,7 +104,7 @@ class ConductanceCS:
             source.conductance_uncertainty_method
         )
         self.precipitation_method = source.precipitation_method
-        if self.precipitation_method == "hardy":
+        if self.precipitation_method in MODELED_ELECTRON_ENERGY_METHODS:
             for name in ELECTRON_METADATA_ATTRIBUTES:
                 setattr(self, name, source.attrs[name])
             self.E0_response_range_fraction = np.full(self.shape, np.nan)
@@ -238,7 +242,7 @@ class ConductanceCS:
         self.conductance_uncertainty_valid[frame] = uncertainty_coverage > 0
         self.Ep_clipping_fraction[frame] = clipping_fraction
         self.Ep_clipping_any[frame] = clipping_any
-        if self.precipitation_method == "hardy":
+        if self.precipitation_method in MODELED_ELECTRON_ENERGY_METHODS:
             fraction, any_flag = reduce_flag_fraction(
                 np.asarray(source.read("E0_response_range_flag", frame), dtype=np.int8) > 0,
                 conductance_valid, mapping, output_shape
@@ -295,7 +299,7 @@ class ConductanceCS:
                 )
                 getattr(self, name)[frame] = reduced
 
-        if self.precipitation_method == "hardy":
+        if self.precipitation_method in MODELED_ELECTRON_ENERGY_METHODS:
             response_flag = np.asarray(source.read("E0_response_range_flag"), dtype=np.int8) > 0
         clipping_flag = np.asarray(
             source.read("Ep_clipping_flag"), dtype=bool
@@ -323,7 +327,7 @@ class ConductanceCS:
             )
             self.Ep_clipping_fraction[frame] = clipping_fraction
             self.Ep_clipping_any[frame] = clipping_any
-            if self.precipitation_method == "hardy":
+            if self.precipitation_method in MODELED_ELECTRON_ENERGY_METHODS:
                 fraction, any_flag = reduce_flag_fraction(
                     response_flag[frame], conductance_valid[frame], mapping, output_shape
                 )
@@ -347,7 +351,7 @@ class ConductanceCS:
                 self.conductance_uncertainty_method
             )
             nc.precipitation_method = self.precipitation_method
-            if self.precipitation_method == "hardy":
+            if self.precipitation_method in MODELED_ELECTRON_ENERGY_METHODS:
                 for name in ELECTRON_METADATA_ATTRIBUTES:
                     nc.setncattr(name, getattr(self, name))
             nc.count_source = self.count_source
@@ -416,7 +420,7 @@ class ConductanceCS:
                 nc.setncattr(f"kp_{name}", value)
 
             dimensions = ("time", "dim1", "dim2")
-            if self.precipitation_method == "hardy":
+            if self.precipitation_method in MODELED_ELECTRON_ENERGY_METHODS:
                 fraction = nc.createVariable("E0_response_range_fraction", "f4", dimensions, zlib=True)
                 fraction[:] = self.E0_response_range_fraction
                 fraction.units = "1"

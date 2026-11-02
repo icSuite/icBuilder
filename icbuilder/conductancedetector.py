@@ -14,6 +14,7 @@ from .precipitationdetector import (
     COUNT_UNCERTAINTY_MODE,
     PREPROCESSING_METADATA_ATTRIBUTES,
     PRECIPITATION_METHODS,
+    MODELED_ELECTRON_ENERGY_METHODS,
     ELECTRON_METADATA_ATTRIBUTES,
     SCHEMA_VERSION as PRECIPITATION_SCHEMA_VERSION,
 )
@@ -106,7 +107,7 @@ def load_precipitation_detector(filename):
             ).copy(),
             "kp_provenance": dict(source.kp_provenance),
         }
-        if source.method == "hardy":
+        if source.method in MODELED_ELECTRON_ENERGY_METHODS:
             for name in ELECTRON_METADATA_ATTRIBUTES:
                 product[name] = source.attrs[name]
             product["E0_response_range_flag"] = np.asarray(source.read("E0_response_range_flag"), dtype=np.int8)
@@ -166,7 +167,7 @@ class ConductanceDetector:
         self.software_version = str(software_version)
 
         self.precipitation_method = precipitation["method"]
-        if self.precipitation_method == "hardy":
+        if self.precipitation_method in MODELED_ELECTRON_ENERGY_METHODS:
             for name in ELECTRON_METADATA_ATTRIBUTES:
                 setattr(self, name, precipitation[name])
             self.E0_response_range_flag = precipitation["E0_response_range_flag"].copy()
@@ -332,7 +333,7 @@ class ConductanceDetector:
                 self.conductance_uncertainty_method
             )
             nc.precipitation_method = self.precipitation_method
-            if self.precipitation_method == "hardy":
+            if self.precipitation_method in MODELED_ELECTRON_ENERGY_METHODS:
                 for name in ELECTRON_METADATA_ATTRIBUTES:
                     nc.setncattr(name, getattr(self, name))
             nc.count_source = self.count_source
@@ -471,7 +472,7 @@ class ConductanceDetector:
                 variable[:] = values
                 variable.units = units
 
-            if self.precipitation_method == "hardy":
+            if self.precipitation_method in MODELED_ELECTRON_ENERGY_METHODS:
                 flag = nc.createVariable("E0_response_range_flag", "i1", dimensions, zlib=True)
                 flag[:] = self.E0_response_range_flag
                 flag.flag_values = np.asarray([-1, 0, 1, 2], dtype=np.int8)

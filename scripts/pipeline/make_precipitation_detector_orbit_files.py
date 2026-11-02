@@ -28,7 +28,10 @@ from icbuilder.precipitationdetector import (
     COLLAPSED_HARDY_COORDINATE_NOTE,
     HARDY_ELECTRON_ENERGY_MODELS,
     HARDY_UNSUBTRACTED_QUALITY_WEIGHT_METHOD,
+    MODELED_ELECTRON_ENERGY_METHODS,
+    ZHANG_PAXTON_UNSUBTRACTED_QUALITY_WEIGHT_METHOD,
     hardy_electron_metadata,
+    zhang_paxton_electron_metadata,
     HARDY_COORDINATE_NOTE,
     PROTON_ENERGY_MODELS,
     SCHEMA_VERSION,
@@ -87,19 +90,26 @@ def precipitation_detector_file_status(
             )
             if method == "hardy" and count_source == "unsubtracted":
                 expected_quality_method = HARDY_UNSUBTRACTED_QUALITY_WEIGHT_METHOD
-            if method == "hardy":
-                coordinate_note = (
-                    HARDY_COORDINATE_NOTE
-                    if hardy_electron_energy_model == "effective"
-                    else COLLAPSED_HARDY_COORDINATE_NOTE
+            if method == "zhang_paxton" and count_source == "unsubtracted":
+                expected_quality_method = (
+                    ZHANG_PAXTON_UNSUBTRACTED_QUALITY_WEIGHT_METHOD
                 )
-                expected_metadata = hardy_electron_metadata(
-                    hardy_electron_energy_model, coordinate_note
-                )
-                if product.attrs.get(
-                    "hardy_electron_energy_model"
-                ) != hardy_electron_energy_model:
-                    return "mismatch"
+            if method in MODELED_ELECTRON_ENERGY_METHODS:
+                if method == "hardy":
+                    coordinate_note = (
+                        HARDY_COORDINATE_NOTE
+                        if hardy_electron_energy_model == "effective"
+                        else COLLAPSED_HARDY_COORDINATE_NOTE
+                    )
+                    expected_metadata = hardy_electron_metadata(
+                        hardy_electron_energy_model, coordinate_note
+                    )
+                    if product.attrs.get(
+                        "hardy_electron_energy_model"
+                    ) != hardy_electron_energy_model:
+                        return "mismatch"
+                else:
+                    expected_metadata = zhang_paxton_electron_metadata()
                 if any(product.attrs.get(name) != value for name, value in expected_metadata.items()):
                     return "mismatch"
                 if not hasattr(product, "E0_response_range_flag"):
@@ -264,7 +274,10 @@ def process_orbit(
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        description="Create image-ratio or Hardy precipitation on WIC detector pixels."
+        description=(
+            "Create image-ratio, Hardy, or collapsed Zhang--Paxton "
+            "precipitation on WIC detector pixels."
+        )
     )
     parser.add_argument(
         "--base-input", "--base",
@@ -390,6 +403,11 @@ def main(argv=None):
             )
         if args.precipitation_method == "image_ratio":
             model_label = f"IR_{args.proton_energy_model}"
+        elif args.precipitation_method == "zhang_paxton":
+            model_label = (
+                "CollapsedZhangPaxtonQWeightedElectron_"
+                f"{args.proton_energy_model.capitalize()}Proton"
+            )
         elif args.hardy_electron_energy_model == "effective":
             model_label = (
                 f"HardyEffectiveElectron_"

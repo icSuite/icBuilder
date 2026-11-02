@@ -13,7 +13,10 @@ from icreader import open_product
 from tqdm import tqdm
 from tqdm.contrib.concurrent import process_map
 
-from icbuilder.precipitationdetector import ELECTRON_METADATA_ATTRIBUTES
+from icbuilder.precipitationdetector import (
+    ELECTRON_METADATA_ATTRIBUTES,
+    MODELED_ELECTRON_ENERGY_METHODS,
+)
 
 from icbuilder.conductancedetector import (
     CONDUCTANCE_MODEL,
@@ -78,7 +81,7 @@ def conductance_detector_file_status(
                 != int(source.schema_version)
             ):
                 return "mismatch"
-            if source.method == "hardy":
+            if source.method in MODELED_ELECTRON_ENERGY_METHODS:
                 for name in ELECTRON_METADATA_ATTRIBUTES:
                     if name not in product.attrs:
                         return "invalid"
