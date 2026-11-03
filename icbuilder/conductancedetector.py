@@ -5,7 +5,6 @@
 from functools import lru_cache
 from hashlib import sha256
 from importlib.metadata import version
-from inspect import signature
 from pathlib import Path
 
 import numpy as np
@@ -81,7 +80,7 @@ PRECIPITATION_FIELDS = (
 #%% Fang magnetic field and provenance
 
 def _python_datetime(value):
-    """Return a timezone-free Python datetime accepted by Apex and ppigrf."""
+    """Return a timezone-free Python datetime accepted by ApexPy."""
 
     if isinstance(value, np.datetime64):
         return value.astype("datetime64[us]").astype(object)
@@ -100,7 +99,7 @@ def fang_magnetic_field_at_150km(
 ):
     """Evaluate 150 km IGRF above stored geographic detector footprints."""
 
-    import ppigrf
+    from apexpy import Apex
 
     glat = np.asarray(glat, dtype=float)
     glon = np.asarray(glon, dtype=float)
@@ -128,23 +127,21 @@ def fang_magnetic_field_at_150km(
         if indices.size == 0:
             continue
         epoch = _python_datetime(time[frame])
+        apex = Apex(date=epoch, refh=float(source_height_km))
         frame_latitude = latitude[frame].ravel()
         frame_longitude = longitude[frame].ravel()
         frame_field = field[frame].ravel()
 
         for start in range(0, indices.size, chunk_size):
             chunk = indices[start:start + chunk_size]
-            east, north, up = ppigrf.igrf(
-                frame_longitude[chunk],
-                frame_latitude[chunk],
-                FANG_MAGNETIC_FIELD_HEIGHT_KM,
-                epoch,
-            )
-            magnitude = np.sqrt(
-                np.asarray(east).reshape(-1)**2
-                + np.asarray(north).reshape(-1)**2
-                + np.asarray(up).reshape(-1)**2
-            ) / 1000.0
+            magnitude = np.asarray(
+                apex.get_babs(
+                    frame_latitude[chunk],
+                    frame_longitude[chunk],
+                    FANG_MAGNETIC_FIELD_HEIGHT_KM,
+                ),
+                dtype=float,
+            ) * 1e6
             frame_field[chunk] = magnitude
 
     return latitude, longitude, field
@@ -154,9 +151,9 @@ def fang_magnetic_field_at_150km(
 def fang_conductance_metadata():
     """Return reproducible Fang and IGRF metadata for Product 3."""
 
-    import ppigrf
+    from apexpy import Apex
 
-    coefficients = Path(signature(ppigrf.igrf).parameters["coeff_fn"].default)
+    coefficients = Path(Apex(date=2000.0).igrf_fn)
     return {
         "fang_model_doi": FANG_2025_MODEL_DOI,
         "fang_energy_domain_keV": (
@@ -169,13 +166,13 @@ def fang_conductance_metadata():
         ),
         "fang_low_energy_policy": FANG_LOW_ENERGY_POLICY,
         "fang_magnetic_field_model": coefficients.stem,
-        "fang_magnetic_field_package_version": version("ppigrf"),
+        "fang_magnetic_field_package_version": version("apexpy"),
         "fang_magnetic_field_coefficients_sha256": sha256(
             coefficients.read_bytes()
         ).hexdigest(),
         "fang_magnetic_field_height_km": FANG_MAGNETIC_FIELD_HEIGHT_KM,
         "fang_magnetic_field_epoch_policy": (
-            "each IMAGE frame time for both Apex and IGRF"
+            "each IMAGE frame time for ApexPy IGRF"
         ),
         "fang_magnetic_field_coordinate_mapping": (
             "Product-2 stored geographic latitude/longitude at "

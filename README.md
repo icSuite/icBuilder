@@ -172,7 +172,8 @@ uses the Product-2 mean energy and energy flux directly. Each Modified-Apex
 detector product already carries its geographic footprint coordinates at the
 130 km reference height. IGRF is evaluated at 150 km at the same geographic
 latitude and longitude; no redundant coordinate conversion or field-line
-mapping to 150 km is applied.
+mapping to 150 km is applied. ApexPy's compiled IGRF magnitude evaluator is
+used, and its package version and coefficient-file hash are stored.
 Positive energies below Fang's published 1 keV limit are evaluated at 1 keV
 and explicitly flagged; energies above 20 keV remain unavailable. Product 3
 stores the original `E0`, the evaluated Fang energy, the 150 km field, all

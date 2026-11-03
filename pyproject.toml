@@ -11,13 +11,12 @@ dependencies = [
     "netCDF4",
     "numba",
     "numpy",
-    "ppigrf",
     "scipy",
     "tqdm",
 ]
 
 [project.optional-dependencies]
-dmsp = ["astropy", "cdflib", "xarray", "nrlmsise00"]
+dmsp = ["astropy", "cdflib", "ppigrf", "xarray", "nrlmsise00"]
 
 [tool.setuptools.packages.find]
 where = ["."]
