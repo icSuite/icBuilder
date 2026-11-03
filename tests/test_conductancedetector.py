@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from apexpy import Apex
 from icphysics import fang_2025_conductance_uncertainty, robinson_conductance
 from netCDF4 import Dataset, date2num
 
@@ -16,6 +17,7 @@ from icbuilder.conductancedetector import (
     FANG_METADATA_ATTRIBUTES,
     SCHEMA_VERSION,
     ConductanceDetector,
+    fang_magnetic_field_at_150km,
 )
 from icbuilder.fuvdetector import (
     BS2D_PREPROCESSING_LABEL,
@@ -334,6 +336,27 @@ def test_fang_detector_uses_150km_field_and_records_floor(tmp_path, monkeypatch)
     assert ORBIT_SCRIPT.conductance_detector_file_status(
         output, source, "fang"
     ) == "mismatch"
+
+
+def test_fang_field_uses_130km_geographic_position_for_150km_igrf():
+    epoch = datetime(2001, 1, 1)
+    latitude, longitude, field = fang_magnetic_field_at_150km(
+        np.asarray([epoch], dtype=object),
+        np.asarray([[[3.12, 69.0]]]),
+        np.asarray([[[0.0, 1.0]]]),
+        130.0,
+    )
+    expected_latitude, expected_longitude, _ = Apex(
+        date=epoch, refh=130.0
+    ).apex2geo(
+        np.asarray([3.12, 69.0]),
+        np.asarray([0.0, 1.0]),
+        130.0,
+    )
+
+    np.testing.assert_allclose(latitude[0, 0], expected_latitude)
+    np.testing.assert_allclose(longitude[0, 0], expected_longitude)
+    assert np.all((field[0, 0] > 20) & (field[0, 0] < 80))
 
 
 def test_detector_conductance_rejects_wrong_product2_schema(tmp_path):

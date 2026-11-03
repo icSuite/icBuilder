@@ -98,7 +98,7 @@ def fang_magnetic_field_at_150km(
     valid=None,
     chunk_size=FANG_MAGNETIC_FIELD_CHUNK_SIZE,
 ):
-    """Map Modified-Apex footprints to 150 km and evaluate IGRF magnitude."""
+    """Convert footprints to geographic coordinates and evaluate 150 km B."""
 
     from apexpy import Apex
     import ppigrf
@@ -141,7 +141,7 @@ def fang_magnetic_field_at_150km(
             geographic_latitude, geographic_longitude, _ = apex.apex2geo(
                 frame_mlat[chunk],
                 frame_mlon[chunk],
-                FANG_MAGNETIC_FIELD_HEIGHT_KM,
+                source_height_km,
             )
             east, north, up = ppigrf.igrf(
                 geographic_longitude,
@@ -190,7 +190,8 @@ def fang_conductance_metadata():
         ),
         "fang_magnetic_field_coordinate_mapping": (
             "Product-2 Modified-Apex latitude/longitude at reference_height_km "
-            "mapped along the Apex field line to 150 km geographic coordinates"
+            "converted to geographic coordinates at reference_height_km; "
+            "IGRF evaluated at 150 km at the same geographic latitude/longitude"
         ),
         "fang_magnetic_field_uncertainty_method": (
             "not modelled; magnetic_field_std=0"
@@ -449,8 +450,8 @@ class ConductanceDetector:
             for name, value in fang_conductance_metadata().items():
                 setattr(self, name, value)
             (
-                self.fang_magnetic_latitude_150km,
-                self.fang_magnetic_longitude_150km,
+                self.fang_geographic_latitude_at_reference_height,
+                self.fang_geographic_longitude_at_reference_height,
                 self.fang_magnetic_field_150km_microtesla,
             ) = fang_magnetic_field_at_150km(
                 self.time,
@@ -679,12 +680,12 @@ class ConductanceDetector:
             }
             if self.conductance_model == "fang":
                 fields.update({
-                    "fang_magnetic_latitude_150km": (
-                        self.fang_magnetic_latitude_150km,
+                    "fang_geographic_latitude_at_reference_height": (
+                        self.fang_geographic_latitude_at_reference_height,
                         "degrees_north",
                     ),
-                    "fang_magnetic_longitude_150km": (
-                        self.fang_magnetic_longitude_150km,
+                    "fang_geographic_longitude_at_reference_height": (
+                        self.fang_geographic_longitude_at_reference_height,
                         "degrees_east",
                     ),
                     "fang_magnetic_field_150km_microtesla": (
