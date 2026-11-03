@@ -45,7 +45,7 @@ FANG_CONDUCTANCE_UNCERTAINTY_METHOD = (
 CONDUCTANCE_UNCERTAINTY_METHOD = ROBINSON_CONDUCTANCE_UNCERTAINTY_METHOD
 FANG_LOW_ENERGY_POLICY = "clip"
 FANG_MAGNETIC_FIELD_HEIGHT_KM = 150.0
-FANG_MAGNETIC_FIELD_CHUNK_SIZE = 32768
+FANG_MAGNETIC_FIELD_CHUNK_SIZE = 65536
 FANG_METADATA_ATTRIBUTES = (
     "fang_model_doi",
     "fang_energy_domain_keV",
@@ -92,60 +92,51 @@ def _python_datetime(value):
 
 def fang_magnetic_field_at_150km(
     time,
-    mlat,
-    mlon,
+    glat,
+    glon,
     source_height_km,
     valid=None,
     chunk_size=FANG_MAGNETIC_FIELD_CHUNK_SIZE,
 ):
-    """Convert footprints to geographic coordinates and evaluate 150 km B."""
+    """Evaluate 150 km IGRF above stored geographic detector footprints."""
 
-    from apexpy import Apex
     import ppigrf
 
-    mlat = np.asarray(mlat, dtype=float)
-    mlon = np.asarray(mlon, dtype=float)
-    if mlat.shape != mlon.shape or mlat.ndim != 3:
-        raise ValueError("mlat and mlon must share (time, row, column) shape")
-    if len(time) != mlat.shape[0]:
+    glat = np.asarray(glat, dtype=float)
+    glon = np.asarray(glon, dtype=float)
+    if glat.shape != glon.shape or glat.ndim != 3:
+        raise ValueError("glat and glon must share (time, row, column) shape")
+    if len(time) != glat.shape[0]:
         raise ValueError("time length must match detector frames")
     if not np.isfinite(source_height_km) or source_height_km <= 0:
         raise ValueError("source_height_km must be positive and finite")
     if chunk_size < 1:
         raise ValueError("chunk_size must be positive")
 
-    selected = np.isfinite(mlat) & np.isfinite(mlon)
+    selected = np.isfinite(glat) & np.isfinite(glon)
     if valid is not None:
         valid = np.asarray(valid, dtype=bool)
-        if valid.shape != mlat.shape:
+        if valid.shape != glat.shape:
             raise ValueError("valid must match detector geometry")
         selected &= valid
 
-    latitude = np.full(mlat.shape, np.nan)
-    longitude = np.full(mlat.shape, np.nan)
-    field = np.full(mlat.shape, np.nan)
-    for frame in range(mlat.shape[0]):
+    latitude = np.where(selected, glat, np.nan)
+    longitude = np.where(selected, glon, np.nan)
+    field = np.full(glat.shape, np.nan)
+    for frame in range(glat.shape[0]):
         indices = np.flatnonzero(selected[frame].ravel())
         if indices.size == 0:
             continue
         epoch = _python_datetime(time[frame])
-        apex = Apex(date=epoch, refh=float(source_height_km))
-        frame_mlat = mlat[frame].ravel()
-        frame_mlon = mlon[frame].ravel()
         frame_latitude = latitude[frame].ravel()
         frame_longitude = longitude[frame].ravel()
         frame_field = field[frame].ravel()
 
         for start in range(0, indices.size, chunk_size):
             chunk = indices[start:start + chunk_size]
-            geographic_latitude, geographic_longitude, _ = apex.apex2geo(
-                frame_mlat[chunk],
-                frame_mlon[chunk],
-                source_height_km,
-            )
             east, north, up = ppigrf.igrf(
-                geographic_longitude,
-                geographic_latitude,
+                frame_longitude[chunk],
+                frame_latitude[chunk],
                 FANG_MAGNETIC_FIELD_HEIGHT_KM,
                 epoch,
             )
@@ -154,8 +145,6 @@ def fang_magnetic_field_at_150km(
                 + np.asarray(north).reshape(-1)**2
                 + np.asarray(up).reshape(-1)**2
             ) / 1000.0
-            frame_latitude[chunk] = geographic_latitude
-            frame_longitude[chunk] = geographic_longitude
             frame_field[chunk] = magnitude
 
     return latitude, longitude, field
@@ -189,9 +178,9 @@ def fang_conductance_metadata():
             "each IMAGE frame time for both Apex and IGRF"
         ),
         "fang_magnetic_field_coordinate_mapping": (
-            "Product-2 Modified-Apex latitude/longitude at reference_height_km "
-            "converted to geographic coordinates at reference_height_km; "
-            "IGRF evaluated at 150 km at the same geographic latitude/longitude"
+            "Product-2 stored geographic latitude/longitude at "
+            "reference_height_km used directly; IGRF evaluated at 150 km at "
+            "the same geographic latitude/longitude"
         ),
         "fang_magnetic_field_uncertainty_method": (
             "not modelled; magnetic_field_std=0"
@@ -455,8 +444,8 @@ class ConductanceDetector:
                 self.fang_magnetic_field_150km_microtesla,
             ) = fang_magnetic_field_at_150km(
                 self.time,
-                self.mlat,
-                self.mlon,
+                self.glat,
+                self.glon,
                 self.reference_height_km,
                 valid=self.method_valid,
             )
