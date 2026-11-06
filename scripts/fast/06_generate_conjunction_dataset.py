@@ -17,6 +17,7 @@ from icbuilder.footprints import (
 from netCDF4 import Dataset
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 import xarray as xr
 
 
@@ -193,7 +194,10 @@ def select_image_orbits_for_year(cs_files, year, support_seconds):
     year_start_ns, year_stop_ns = year_bounds(year)
     support_ns = int(round(float(support_seconds) * 1e9))
     selected = []
-    for orbit, filename in sorted(cs_files.items()):
+    files = sorted(cs_files.items())
+    for orbit, filename in tqdm(
+        files, desc=f"Index IMAGE orbits for {year}", unit="orbit"
+    ):
         with open_product(filename) as product:
             times_ns = datetime64_ns(product.time)
         if (
@@ -291,7 +295,9 @@ def index_fast_files(path, year, selected_files=None):
         raise FileNotFoundError(f"No FAST NetCDF files found in {path}")
 
     indexed = []
-    for filename in filenames:
+    for filename in tqdm(
+        filenames, desc=f"Index FAST products for {year}", unit="file"
+    ):
         product = inspect_fast_file(filename, year_start_ns, year_stop_ns)
         if product is not None:
             indexed.append(product)
@@ -856,7 +862,7 @@ def write_candidate_columns(output, matches):
 def write_fast_fields(output, matches, fast_products):
     """Gather each FAST file only for its selected source records."""
 
-    for product in fast_products:
+    for product in tqdm(fast_products, desc="Copy FAST fields", unit="file"):
         positions = np.flatnonzero(
             matches.fast_source_file_id.to_numpy() == product["file_id"]
         )
@@ -884,7 +890,8 @@ def gathered_field(product, name, frames, rows, columns):
 def write_image_fields(output, matches, p2_files, p3_files):
     """Read and write IMAGE data one orbit and one field at a time."""
 
-    for orbit in sorted(matches.image_orbit.unique()):
+    orbits = sorted(matches.image_orbit.unique())
+    for orbit in tqdm(orbits, desc="Copy IMAGE detector fields", unit="orbit"):
         positions = np.flatnonzero(matches.image_orbit.to_numpy() == orbit)
         selected = matches.iloc[positions]
         frames = selected.image_frame.to_numpy(dtype=int)
@@ -1028,7 +1035,10 @@ def build_dataset(args):
     support_ns = int(round(args.frame_support_seconds * 1e9))
     year_start_ns, year_stop_ns = year_bounds(args.year)
 
-    for orbit in sorted(cs_files):
+    orbit_progress = tqdm(
+        sorted(cs_files), desc="Discover FAST--IMAGE matches", unit="orbit"
+    )
+    for orbit in orbit_progress:
         with open_product(cs_files[orbit]) as cs, open_product(
             p2_files[orbit]
         ) as precipitation, open_product(p3_files[orbit]) as conductance:
@@ -1057,9 +1067,9 @@ def build_dataset(args):
                 orbit, cs, precipitation, fast_slices,
                 args.frame_support_seconds, counts,
             ))
-            print(
-                f"Orbit {orbit:04d}: {counts['successful_candidate_count']:,} "
-                "cumulative supported candidates"
+            orbit_progress.set_postfix(
+                orbit=f"{orbit:04d}",
+                supported=f"{counts['successful_candidate_count']:,}",
             )
 
     if candidates:
