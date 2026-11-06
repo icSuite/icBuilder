@@ -330,11 +330,6 @@ def index_fast_files(path, year, selected_files=None):
     if not indexed:
         raise ValueError(f"No FAST products overlap {year}")
 
-    energy_counts = {product["energy_count"] for product in indexed}
-    if len(energy_counts) != 1:
-        raise ValueError(
-            f"FAST products use mixed energy dimensions: {sorted(energy_counts)}"
-        )
     reference = {
         name: indexed[0]["attrs"].get(name) for name in FAST_COMMON_ATTRIBUTES
     }
@@ -801,6 +796,7 @@ def create_output(filename, sample_count, energy_count, source_files, metadata,
 
     integer_variables = {
         "fast_source_file_id": "i4", "fast_source_record": "i4",
+        "fast_energy_channel_count": "i2",
         "image_orbit": "i4", "image_frame": "i4", "wic_source_index": "i4",
         "cs_row": "i2", "cs_column": "i2", "detector_row": "i2",
         "detector_column": "i2", "detector_footprint_match_count": "i2",
@@ -808,6 +804,11 @@ def create_output(filename, sample_count, energy_count, source_files, metadata,
     }
     for name, dtype in integer_variables.items():
         create_numeric_variable(output, name, ("sample",), dtype, fill=-1)
+    output.variables["fast_energy_channel_count"].units = "1"
+    output.variables["fast_energy_channel_count"].description = (
+        "Original energy_index size in the selected FAST source product; "
+        "spectral values beyond this count are fill padding"
+    )
 
     for name in ("fast_time", "image_time", "image_Kp_interval_start"):
         variable = create_numeric_variable(
@@ -901,12 +902,14 @@ def write_fast_fields(output, matches, fast_products):
         positions = selected.index.to_numpy(dtype=int)
         records = selected.fast_source_record.to_numpy(dtype=int)
         with xr.open_dataset(product["path"]) as fast:
+            energy_count = product["energy_count"]
+            output.variables["fast_energy_channel_count"][positions] = energy_count
             for name in FAST_SCALAR_FIELDS:
                 output.variables[name][positions] = np.asarray(
                     fast[name].values
                 )[records]
             for name in FAST_SPECTRAL_FIELDS:
-                output.variables[name][positions, :] = np.asarray(
+                output.variables[name][positions, :energy_count] = np.asarray(
                     fast[name].values
                 )[records, :]
 
@@ -1018,7 +1021,8 @@ def output_is_current(filename, year, support_seconds, signatures):
         with Dataset(filename) as data:
             required = {
                 "fast_time", "image_time", "fast_source_file_id",
-                "fast_source_record", "image_orbit", "image_frame",
+                "fast_source_record", "fast_energy_channel_count",
+                "image_orbit", "image_frame",
                 "detector_row", "detector_column", "image_E0", "image_Fe",
                 "image_P", "image_H",
                 "earthward_differential_number_flux_cm2_s_ev",
@@ -1133,7 +1137,10 @@ def build_dataset(args):
     counts["duplicate_frame_candidates_removed"] = len(all_candidates) - len(matches)
     counts["final_sample_count"] = len(matches)
 
-    energy_count = fast_products[0]["energy_count"]
+    source_energy_counts = sorted({
+        product["energy_count"] for product in fast_products
+    })
+    energy_count = max(source_energy_counts)
     first_orbit = min(cs_files)
     metadata = source_variable_metadata(
         fast_products, (p2_files[first_orbit], p3_files[first_orbit])
@@ -1161,6 +1168,11 @@ def build_dataset(args):
         ),
         "annotation_status": "not used; complete unannotated conjunction population",
         "processing_complete": "true",
+        "fast_spectral_padding": (
+            "Mixed FAST energy_index widths use the maximum output width; "
+            "shorter source spectra are right-padded with fill values and "
+            "fast_energy_channel_count retains the original width"
+        ),
         "reference_height_km": REFERENCE_HEIGHT_KM,
         "source_fast_root": str(Path(args.fast_path).resolve()),
         "source_precipitation_cs_root": str(
@@ -1183,6 +1195,8 @@ def build_dataset(args):
         "netCDF4_version": package_version("netCDF4"),
         "secsy_version": package_version("secsy"),
         "fast_input_file_count": len(fast_products),
+        "fast_source_energy_index_counts": json.dumps(source_energy_counts),
+        "fast_output_energy_index_count": energy_count,
         "fast_input_record_count": sum(
             product["selected_record_count"] for product in fast_products
         ),

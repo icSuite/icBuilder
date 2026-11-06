@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from scipy.sparse import csr_matrix
+import xarray as xr
 
 
 try:
@@ -276,6 +277,55 @@ def test_atomic_schema_writer_preserves_unique_source_identity(tmp_path):
         assert data.product_type == "fast_image_conjunctions"
         assert len(data.dimensions["sample"]) == 2
         assert len(data.dimensions["energy_index"]) == 3
+
+
+def test_mixed_fast_energy_widths_are_padded_and_recorded(tmp_path):
+    source_files = []
+    products = []
+    for file_id, energy_count in enumerate((2, 4)):
+        filename = tmp_path / f"fast_{energy_count}.nc"
+        source = xr.Dataset(coords={
+            "time": np.array(["2000-01-01"], dtype="datetime64[ns]"),
+            "energy_index": np.arange(energy_count),
+        })
+        for name in BUILDER.FAST_SCALAR_FIELDS:
+            source[name] = ("time", np.array([file_id + 1]))
+        for name in BUILDER.FAST_SPECTRAL_FIELDS:
+            source[name] = (
+                ("time", "energy_index"),
+                np.full((1, energy_count), file_id + 1.0),
+            )
+        source.to_netcdf(filename)
+        source_files.append(filename)
+        products.append({
+            "file_id": file_id,
+            "path": filename,
+            "energy_count": energy_count,
+        })
+
+    matches = pd.DataFrame({
+        "fast_source_file_id": [0, 1],
+        "fast_source_record": [0, 0],
+    })
+    output = tmp_path / "mixed_energy.nc"
+    with BUILDER.create_output(
+        output,
+        sample_count=2,
+        energy_count=4,
+        source_files=source_files,
+        metadata={},
+        root_attrs={"product_type": "fast_image_conjunctions", "schema_version": 1},
+    ) as target:
+        BUILDER.write_fast_fields(target, matches, products)
+
+    with Dataset(output) as data:
+        np.testing.assert_array_equal(
+            data.variables["fast_energy_channel_count"][:], [2, 4]
+        )
+        spectrum = data.variables["fast_energy_ev"][:]
+        np.testing.assert_array_equal(spectrum[0, :2], [1.0, 1.0])
+        np.testing.assert_array_equal(np.ma.getmaskarray(spectrum[0]), [0, 0, 1, 1])
+        np.testing.assert_array_equal(spectrum[1], [2.0, 2.0, 2.0, 2.0])
 
 
 def test_duplicate_source_records_fail_saved_output_validation(tmp_path):
