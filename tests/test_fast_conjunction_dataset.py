@@ -118,14 +118,18 @@ class FakeCS:
 
 
 class FakePrecipitation:
-    def read(self, name):
+    def read(self, name, index=None):
         if name in ("mlat", "mlt"):
-            return np.zeros((1, 1, 2), dtype=float)
-        if name == "wic_corrected":
-            return np.array([[[10.0, 20.0]]])
-        if name == "si13_corrected":
-            return np.array([[[5.0, np.nan]]])
-        raise KeyError(name)
+            values = np.zeros((1, 1, 2), dtype=float)
+        elif name == "wic_corrected":
+            values = np.array([[[10.0, 20.0]]])
+        elif name == "si13_corrected":
+            values = np.array([[[5.0, np.nan]]])
+        else:
+            raise KeyError(name)
+        if index is None:
+            return values
+        return values[index]
 
 
 def test_exact_detector_pixel_without_image_pair_is_not_written(monkeypatch):
@@ -184,6 +188,32 @@ def test_unique_match_uses_supported_nearest_frame_and_deterministic_ties():
     assert source_zero.image_orbit == 85
     assert source_zero.image_frame == 2
     assert source_zero.successful_frame_candidate_count == 3
+
+
+def test_detector_gather_reads_only_matched_frames():
+    class FrameProduct:
+        def __init__(self):
+            self.frame_runs_read = []
+
+        def read(self, name, frame_slice):
+            self.frame_runs_read.append((frame_slice.start, frame_slice.stop))
+            frames = np.arange(frame_slice.start, frame_slice.stop)
+            return np.stack([
+                np.arange(6).reshape(2, 3) + frame * 10
+                for frame in frames
+            ])
+
+    product = FrameProduct()
+    values = BUILDER.gathered_field(
+        product,
+        "test",
+        np.array([1, 1, 2, 3, 5]),
+        np.array([0, 1, 0, 0, 1]),
+        np.array([2, 1, 0, 0, 2]),
+    )
+
+    np.testing.assert_array_equal(values, [12, 14, 20, 30, 55])
+    assert product.frame_runs_read == [(1, 4), (5, 6)]
 
 
 class FakeProduct:

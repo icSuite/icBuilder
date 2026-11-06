@@ -14,7 +14,7 @@ from icbuilder.footprints import (
     overlap_mapping,
     point_in_quadrilaterals,
 )
-from netCDF4 import Dataset
+from netCDF4 import Dataset, num2date
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -248,11 +248,12 @@ def temporal_candidate_indices(times_ns, image_time_ns, support_seconds):
 def inspect_fast_file(filename, year_start_ns, year_stop_ns):
     """Validate one processed FAST product and return its usable time range."""
 
-    with xr.open_dataset(filename) as data:
-        if data.attrs.get("processing_complete") != "true":
+    with Dataset(filename) as data:
+        attrs = {name: data.getncattr(name) for name in data.ncattrs()}
+        if attrs.get("processing_complete") != "true":
             raise ValueError(f"{filename} is not a complete FAST archive product")
         if not np.isclose(
-            float(data.attrs.get("footprint_height_km", np.nan)),
+            float(attrs.get("footprint_height_km", np.nan)),
             REFERENCE_HEIGHT_KM,
         ):
             raise ValueError(f"{filename} does not use a 130-km FAST footprint")
@@ -262,24 +263,49 @@ def inspect_fast_file(filename, year_start_ns, year_stop_ns):
         if missing:
             raise ValueError(f"{filename} is missing {sorted(missing)}")
 
-        times = datetime64_ns(data.time.values)
-        if not times.size or np.any(np.diff(times) <= 0):
+        time_variable = data.variables["time"]
+        numeric_time = np.asarray(time_variable[:])
+        if not numeric_time.size or np.any(np.diff(numeric_time) <= 0):
             raise ValueError(f"{filename} FAST times must be nonempty and unique")
-        selected = np.flatnonzero(
-            (times >= year_start_ns) & (times < year_stop_ns)
+        endpoints = num2date(
+            numeric_time[[0, -1]],
+            time_variable.units,
+            getattr(time_variable, "calendar", "standard"),
+            only_use_cftime_datetimes=False,
         )
-        if not selected.size:
+        endpoint_ns = np.array(
+            [np.datetime64(value.isoformat(), "ns") for value in endpoints]
+        ).astype(np.int64)
+        if endpoint_ns[1] < year_start_ns or endpoint_ns[0] >= year_stop_ns:
             return None
 
-        energy_count = int(data.sizes["energy_index"])
+        if endpoint_ns[0] >= year_start_ns and endpoint_ns[1] < year_stop_ns:
+            selected_count = numeric_time.size
+        else:
+            decoded = num2date(
+                numeric_time,
+                time_variable.units,
+                getattr(time_variable, "calendar", "standard"),
+                only_use_cftime_datetimes=False,
+            )
+            times_ns = np.array(
+                [np.datetime64(value.isoformat(), "ns") for value in decoded]
+            ).astype(np.int64)
+            selected_count = int(np.count_nonzero(
+                (times_ns >= year_start_ns) & (times_ns < year_stop_ns)
+            ))
+            if not selected_count:
+                return None
+
+        energy_count = len(data.dimensions["energy_index"])
         return {
             "path": Path(filename),
-            "start_ns": int(times[selected[0]]),
-            "stop_ns": int(times[selected[-1]]),
+            "start_ns": max(int(endpoint_ns[0]), year_start_ns),
+            "stop_ns": min(int(endpoint_ns[1]), year_stop_ns - 1),
             "energy_count": energy_count,
-            "record_count": int(times.size),
-            "selected_record_count": int(selected.size),
-            "attrs": dict(data.attrs),
+            "record_count": int(numeric_time.size),
+            "selected_record_count": selected_count,
+            "attrs": attrs,
         }
 
 
@@ -590,10 +616,6 @@ def discover_orbit_candidates(orbit, cs, precipitation, fast_slices,
     si13_coverage = np.asarray(cs.read("si13_coverage"), dtype=float)
     cs_wic = np.asarray(cs.read("wic_corrected"), dtype=float)
     cs_si13 = np.asarray(cs.read("si13_corrected"), dtype=float)
-    image_mlat = np.asarray(precipitation.read("mlat"), dtype=float)
-    image_mlt = np.asarray(precipitation.read("mlt"), dtype=float)
-    detector_wic = np.asarray(precipitation.read("wic_corrected"), dtype=float)
-    detector_si13 = np.asarray(precipitation.read("si13_corrected"), dtype=float)
 
     image_times_ns = datetime64_ns(cs.time)
     candidates = []
@@ -635,13 +657,15 @@ def discover_orbit_candidates(orbit, cs, precipitation, fast_slices,
             name: np.concatenate([part[name] for part in frame_parts])
             for name in frame_parts[0]
         }
+        image_mlat = np.asarray(precipitation.read("mlat", frame), dtype=float)
+        image_mlt = np.asarray(precipitation.read("mlt", frame), dtype=float)
         matcher = make_detector_footprint_matcher(
-            image_mlat[frame], image_mlt[frame], cs.grid
+            image_mlat, image_mlt, cs.grid
         )
         row, column, separation, match_count = match_detector_footprints(
             matcher, cs.grid, frame_data["cs_row"], frame_data["cs_column"],
             frame_data["mlat"], frame_data["mlt"],
-            image_mlat[frame], image_mlt[frame],
+            image_mlat, image_mlt,
         )
         contained = match_count > 0
         counts["detector_footprint_miss_count"] += int(
@@ -653,12 +677,16 @@ def discover_orbit_candidates(orbit, cs, precipitation, fast_slices,
         if not np.any(contained):
             continue
 
+        detector_wic = np.asarray(
+            precipitation.read("wic_corrected", frame), dtype=float
+        )
+        detector_si13 = np.asarray(
+            precipitation.read("si13_corrected", frame), dtype=float
+        )
         exact_data = np.zeros(contained.size, dtype=bool)
         exact_data[contained] = (
-            np.isfinite(detector_wic[frame, row[contained], column[contained]])
-            & np.isfinite(
-                detector_si13[frame, row[contained], column[contained]]
-            )
+            np.isfinite(detector_wic[row[contained], column[contained]])
+            & np.isfinite(detector_si13[row[contained], column[contained]])
         )
         counts["exact_detector_data_miss_count"] += int(
             np.count_nonzero(contained & ~exact_data)
@@ -862,13 +890,16 @@ def write_candidate_columns(output, matches):
 def write_fast_fields(output, matches, fast_products):
     """Gather each FAST file only for its selected source records."""
 
-    for product in tqdm(fast_products, desc="Copy FAST fields", unit="file"):
-        positions = np.flatnonzero(
-            matches.fast_source_file_id.to_numpy() == product["file_id"]
-        )
-        if not positions.size:
-            continue
-        records = matches.fast_source_record.to_numpy(dtype=int)[positions]
+    products_by_id = {
+        product["file_id"]: product for product in fast_products
+    }
+    grouped = matches.groupby("fast_source_file_id", sort=True)
+    for file_id, selected in tqdm(
+        grouped, total=grouped.ngroups, desc="Copy FAST fields", unit="file"
+    ):
+        product = products_by_id[int(file_id)]
+        positions = selected.index.to_numpy(dtype=int)
+        records = selected.fast_source_record.to_numpy(dtype=int)
         with xr.open_dataset(product["path"]) as fast:
             for name in FAST_SCALAR_FIELDS:
                 output.variables[name][positions] = np.asarray(
@@ -881,19 +912,39 @@ def write_fast_fields(output, matches, fast_products):
 
 
 def gathered_field(product, name, frames, rows, columns):
-    """Read one detector cube once and gather pointwise values."""
+    """Read contiguous selected frame runs and gather pointwise values."""
 
-    values = np.asarray(product.read(name))
-    return values[frames, rows, columns]
+    gathered = None
+    unique_frames = np.unique(frames)
+    run_starts = np.r_[0, np.flatnonzero(np.diff(unique_frames) > 1) + 1]
+    run_stops = np.r_[run_starts[1:], unique_frames.size]
+
+    for first, stop in zip(run_starts, run_stops):
+        start_frame = int(unique_frames[first])
+        stop_frame = int(unique_frames[stop - 1]) + 1
+        selected = (frames >= start_frame) & (frames < stop_frame)
+        images = np.asarray(product.read(name, slice(start_frame, stop_frame)))
+        if gathered is None:
+            gathered = np.empty(frames.size, dtype=images.dtype)
+        frame_offset = frames[selected] - start_frame
+        gathered[selected] = images[
+            frame_offset, rows[selected], columns[selected]
+        ]
+    return gathered
 
 
 def write_image_fields(output, matches, p2_files, p3_files):
     """Read and write IMAGE data one orbit and one field at a time."""
 
-    orbits = sorted(matches.image_orbit.unique())
-    for orbit in tqdm(orbits, desc="Copy IMAGE detector fields", unit="orbit"):
-        positions = np.flatnonzero(matches.image_orbit.to_numpy() == orbit)
-        selected = matches.iloc[positions]
+    grouped = matches.groupby("image_orbit", sort=True)
+    for orbit, selected in tqdm(
+        grouped,
+        total=grouped.ngroups,
+        desc="Copy IMAGE detector fields",
+        unit="orbit",
+    ):
+        orbit = int(orbit)
+        positions = selected.index.to_numpy(dtype=int)
         frames = selected.image_frame.to_numpy(dtype=int)
         rows = selected.detector_row.to_numpy(dtype=int)
         columns = selected.detector_column.to_numpy(dtype=int)
