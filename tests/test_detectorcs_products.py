@@ -218,6 +218,16 @@ def test_paired_products_share_mapping_and_round_trip(tmp_path, monkeypatch):
     assert conductance.conductance_valid.any()
     assert np.isfinite(precipitation.si12[precipitation.method_valid]).all()
     assert np.isfinite(precipitation.dsi12[precipitation.method_valid]).all()
+    assert np.isfinite(
+        precipitation.wic_smoothed[precipitation.method_valid]
+    ).all()
+    assert np.isfinite(
+        precipitation.dwic_smoothed[precipitation.method_valid]
+    ).all()
+    assert np.any(
+        precipitation.wic_smoothed[precipitation.method_valid]
+        > precipitation.wic_corrected[precipitation.method_valid]
+    )
     assert precipitation.count_source == "background_subtracted"
     assert precipitation.smoothed
     assert precipitation.smoothing_method == "gaussian"
@@ -279,6 +289,10 @@ def test_paired_products_share_mapping_and_round_trip(tmp_path, monkeypatch):
     with Dataset(precipitation_output) as nc:
         assert nc.variables["si12"].shape == (2, 46, 46)
         assert nc.variables["dsi12"].shape == (2, 46, 46)
+        assert nc.variables["wic_smoothed"].shape == (2, 46, 46)
+        assert nc.variables["dwic_smoothed"].shape == (2, 46, 46)
+        assert nc.variables["wic_smoothed"].units == "counts"
+        assert nc.variables["dwic_smoothed"].units == "counts"
         assert nc.count_source == "background_subtracted"
         assert nc.smoothed == 1
         assert nc.smoothing_method == "gaussian"

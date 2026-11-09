@@ -91,6 +91,16 @@ def precipitation_cs_file_status(filename, source_precipitation):
                         return "mismatch"
             if not hasattr(product, "si12") or not hasattr(product, "dsi12"):
                 return "invalid"
+            source_has_preproton_wic = (
+                hasattr(source, "wic_smoothed")
+                and hasattr(source, "dwic_smoothed")
+            )
+            product_has_preproton_wic = (
+                hasattr(product, "wic_smoothed")
+                and hasattr(product, "dwic_smoothed")
+            )
+            if source_has_preproton_wic != product_has_preproton_wic:
+                return "invalid"
             if (
                 product.source_precipitation_detector
                 != str(source_precipitation)

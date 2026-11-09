@@ -63,6 +63,12 @@ UNCERTAINTY_FIELDS = {
 COVARIANCE_FIELDS = {
     "varE0Fe": "keV mW m-2",
 }
+PREPROTON_MEAN_FIELDS = {
+    "wic_smoothed": "counts",
+}
+PREPROTON_UNCERTAINTY_FIELDS = {
+    "dwic_smoothed": "counts",
+}
 RESULT_FIELDS = tuple(
     list(MEAN_FIELDS)
     + list(UNCERTAINTY_FIELDS)
@@ -183,7 +189,23 @@ class PrecipitationCS:
                 source.proton_energy_uncertainty_constant
             )
 
-        for name in MEAN_FIELDS | UNCERTAINTY_FIELDS | COVARIANCE_FIELDS:
+        has_preproton_wic = (
+            hasattr(source, "wic_smoothed")
+            and hasattr(source, "dwic_smoothed")
+        )
+        self.preproton_mean_fields = (
+            PREPROTON_MEAN_FIELDS if has_preproton_wic else {}
+        )
+        self.preproton_uncertainty_fields = (
+            PREPROTON_UNCERTAINTY_FIELDS if has_preproton_wic else {}
+        )
+
+        stored_fields = (
+            MEAN_FIELDS | UNCERTAINTY_FIELDS | COVARIANCE_FIELDS
+            | self.preproton_mean_fields
+            | self.preproton_uncertainty_fields
+        )
+        for name in stored_fields:
             setattr(self, name, np.full(self.shape, np.nan))
         self.source_count = np.zeros(self.shape, dtype=np.int32)
         self.coverage = np.zeros(self.shape)
@@ -202,7 +224,7 @@ class PrecipitationCS:
             source.read("method_valid", frame), dtype=bool
         )
 
-        for name in MEAN_FIELDS:
+        for name in MEAN_FIELDS | self.preproton_mean_fields:
             values = np.asarray(source.read(name, frame), dtype=float)
             valid = (
                 np.isfinite(values)
@@ -214,7 +236,7 @@ class PrecipitationCS:
             )
             getattr(self, name)[frame] = reduced
 
-        for name in UNCERTAINTY_FIELDS:
+        for name in UNCERTAINTY_FIELDS | self.preproton_uncertainty_fields:
             uncertainty = np.asarray(source.read(name, frame), dtype=float)
             variance, _ = reduce_measurement_variance(
                 uncertainty**2, method_valid, mapping, output_shape
@@ -271,7 +293,7 @@ class PrecipitationCS:
         output_shape = self.grid.shape
         method_valid = np.asarray(source.read("method_valid"), dtype=bool)
 
-        for name in MEAN_FIELDS:
+        for name in MEAN_FIELDS | self.preproton_mean_fields:
             values = np.asarray(source.read(name), dtype=float)
             for frame, mapping in enumerate(mappings):
                 valid = (
@@ -285,7 +307,7 @@ class PrecipitationCS:
                 getattr(self, name)[frame] = reduced
 
         uncertainty_valid = method_valid.copy()
-        for name in UNCERTAINTY_FIELDS:
+        for name in UNCERTAINTY_FIELDS | self.preproton_uncertainty_fields:
             uncertainty = np.asarray(source.read(name), dtype=float)
             if name in ("dE0", "dFe"):
                 uncertainty_valid &= np.isfinite(uncertainty)
@@ -434,6 +456,8 @@ class PrecipitationCS:
                 list(MEAN_FIELDS.items())
                 + list(UNCERTAINTY_FIELDS.items())
                 + list(COVARIANCE_FIELDS.items())
+                + list(self.preproton_mean_fields.items())
+                + list(self.preproton_uncertainty_fields.items())
             ):
                 variable = nc.createVariable(
                     name, "f4", dimensions, zlib=True
