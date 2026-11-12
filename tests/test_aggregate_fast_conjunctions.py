@@ -61,9 +61,8 @@ def test_mixed_energy_tables_are_duration_weighted_on_fine_grid():
     np.testing.assert_allclose(result[2], [5.0, 5.0, 7.0, 7.0])
 
 
-def make_conjunction(filename):
+def make_conjunction(filename, year=2000, energy_count=4):
     sample_count = 4
-    energy_count = 4
     altitude = np.linspace(70.0, 300.0, 226)
     with Dataset(filename, "w") as data:
         data.createDimension("sample", sample_count)
@@ -71,7 +70,7 @@ def make_conjunction(filename):
         data.createDimension("msis_altitude_km", altitude.size)
         data.createDimension("fast_source_file", 1)
         data.processing_complete = "true"
-        data.selected_year = 2000
+        data.selected_year = year
         data.createVariable(
             "fast_source_file", str, ("fast_source_file",)
         )[0] = "fast_source.nc"
@@ -126,10 +125,10 @@ def make_conjunction(filename):
             [5e6, 5e6, 5e6, 5e6],
         ])
         for name, array in {
-            "fast_energy_ev": energy,
-            "fast_energy_width_ev": width,
-            "earthward_differential_number_flux_cm2_s_ev": spectrum,
-            "anti_earthward_differential_number_flux_cm2_s_ev": spectrum * 0.1,
+            "fast_energy_ev": energy[:, :energy_count],
+            "fast_energy_width_ev": width[:, :energy_count],
+            "earthward_differential_number_flux_cm2_s_ev": spectrum[:, :energy_count],
+            "anti_earthward_differential_number_flux_cm2_s_ev": spectrum[:, :energy_count] * 0.1,
         }.items():
             data.createVariable(
                 name, "f8", ("sample", "energy_index"), fill_value=np.nan
@@ -229,3 +228,29 @@ def test_annotations_select_only_accepted_tracks(tmp_path):
             data.variables["sample_selected"][:], [1, 1, 0, 0]
         )
         assert len(data.dimensions["pixel"]) == 1
+
+
+def test_compiler_accepts_different_yearly_energy_dimensions(tmp_path):
+    coarse = tmp_path / "conjunction_2000.nc"
+    fine = tmp_path / "conjunction_2001.nc"
+    output = tmp_path / "analysis.nc"
+    make_conjunction(coarse, year=2000, energy_count=2)
+    make_conjunction(fine, year=2001, energy_count=4)
+    args = SimpleNamespace(
+        input=[coarse, fine], annotations=None, output=output,
+        maximum_detector_separation_deg=None,
+        maximum_altitude_km=None, minimum_sza_deg=None,
+        maximum_absolute_time_offset_seconds=None,
+        record_batch_size=10, conductance_batch_size=10,
+        overwrite=False,
+    )
+
+    AGGREGATE.build_dataset(args)
+
+    with Dataset(output) as data:
+        assert len(data.dimensions["energy_index"]) == 4
+        np.testing.assert_array_equal(
+            data.variables["pixel_year"][:], [2000, 2000, 2001, 2001]
+        )
+        padded = data.variables["pixel_fast_energy_ev"][0, 2:]
+        assert np.ma.getmaskarray(padded).all()

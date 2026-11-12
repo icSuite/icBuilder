@@ -846,8 +846,9 @@ def inspect_inputs(filenames, annotations, limits):
                     raise ValueError("conjunction files have different scalar fields")
                 if set(current_image_schema) != set(image_schema):
                     raise ValueError("conjunction files have different IMAGE fields")
-                if len(data.dimensions["energy_index"]) != energy_count:
-                    raise ValueError("conjunction files have different energy dimensions")
+                energy_count = max(
+                    energy_count, len(data.dimensions["energy_index"])
+                )
                 if not np.array_equal(
                     values(data.variables["msis_altitude_km"]), msis_altitude
                 ):
