@@ -9,6 +9,7 @@ The precipitation method does not affect the matching.
 #%% Imports and fields
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
 from pathlib import Path
 
@@ -83,16 +84,57 @@ def temporal_candidate_indices(times_ns, image_time_ns, support_seconds):
     return np.flatnonzero(np.abs(np.asarray(times_ns, dtype=np.int64) - int(image_time_ns)) <= support_ns)
 
 
-def select_image_orbits_for_year(cs_files, year, support_seconds):
+def inspect_image_orbit(filename):
+    with Dataset(filename) as data:
+        time_variable = data.variables["time"]
+        record_count = len(time_variable)
+        if record_count == 0:
+            raise ValueError(f"IMAGE product has no times: {filename}")
+        numeric_time = np.asarray(time_variable[[0, record_count - 1]])
+        endpoints = num2date(numeric_time, time_variable.units,
+                             getattr(time_variable, "calendar", "standard"),
+                             only_use_cftime_datetimes=False)
+
+    endpoints = np.array([
+        np.datetime64(value.isoformat(), "ns") for value in endpoints
+    ]).astype(np.int64)
+    return int(endpoints[0]), int(endpoints[1])
+
+
+def select_image_orbits_for_year(cs_files, year, support_seconds, workers=1,
+                                 return_intervals=False):
     year_start, year_stop = year_bounds(year)
     support_ns = int(round(float(support_seconds) * 1e9))
-    selected = []
-    for orbit, filename in tqdm(sorted(cs_files.items()), desc=f"Index IMAGE orbits for {year}", unit="orbit"):
-        with open_product(filename) as product:
-            times = datetime64_ns(product.time)
-        if times[-1] + support_ns >= year_start and times[0] - support_ns < year_stop:
-            selected.append(orbit)
-    return selected
+    items = sorted(cs_files.items())
+    intervals = {}
+
+    progress_options = {
+        "total": len(items),
+        "desc": f"Index IMAGE orbits for {year}",
+        "unit": "orbit",
+    }
+    if workers == 1:
+        results = (
+            (orbit, *inspect_image_orbit(filename))
+            for orbit, filename in items
+        )
+        for orbit, start_ns, stop_ns in tqdm(results, **progress_options):
+            if stop_ns + support_ns >= year_start and start_ns - support_ns < year_stop:
+                intervals[orbit] = (start_ns, stop_ns)
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(inspect_image_orbit, filename): orbit
+                for orbit, filename in items
+            }
+            for future in tqdm(as_completed(futures), **progress_options):
+                orbit = futures[future]
+                start_ns, stop_ns = future.result()
+                if stop_ns + support_ns >= year_start and start_ns - support_ns < year_stop:
+                    intervals[orbit] = (start_ns, stop_ns)
+
+    intervals = dict(sorted(intervals.items()))
+    return intervals if return_intervals else list(intervals)
 
 
 #%% Processed FAST files
@@ -105,10 +147,15 @@ def inspect_fast_file(filename, year_start_ns, year_stop_ns):
             raise ValueError(f"FAST product is not mapped to 130 km: {filename}")
 
         time_variable = data.variables["time"]
-        numeric_time = np.asarray(time_variable[:])
-        if not numeric_time.size or np.any(np.diff(numeric_time) <= 0):
+        record_count = len(time_variable)
+        if record_count == 0:
             raise ValueError(f"FAST times are not nonempty and increasing: {filename}")
-        endpoints = num2date(numeric_time[[0, -1]], time_variable.units, getattr(time_variable, "calendar", "standard"), only_use_cftime_datetimes=False)
+        numeric_time = np.asarray(time_variable[[0, record_count - 1]])
+        if record_count > 1 and numeric_time[1] <= numeric_time[0]:
+            raise ValueError(f"FAST times are not nonempty and increasing: {filename}")
+        endpoints = num2date(numeric_time, time_variable.units,
+                             getattr(time_variable, "calendar", "standard"),
+                             only_use_cftime_datetimes=False)
 
         endpoints = np.array([np.datetime64(value.isoformat(), "ns") for value in endpoints]).astype(np.int64)
         if endpoints[1] < year_start_ns or endpoints[0] >= year_stop_ns:
@@ -118,23 +165,41 @@ def inspect_fast_file(filename, year_start_ns, year_stop_ns):
         return {"path": Path(filename),
                 "start_ns": max(int(endpoints[0]), year_start_ns),
                 "stop_ns": min(int(endpoints[1]), year_stop_ns - 1),
-                "record_count": numeric_time.size,
+                "record_count": record_count,
                 "energy_count": len(data.dimensions["energy_index"]),
-                "msis_altitude_km": altitude,
-                "attrs": {name: data.getncattr(name) for name in data.ncattrs()}}
+                "msis_altitude_km": altitude}
 
 
-def index_fast_files(path, year, selected_files=None):
+def index_fast_files(path, year, selected_files=None, workers=1):
     year_start, year_stop = year_bounds(year)
     filenames = ([Path(filename) for filename in selected_files] if selected_files else sorted(Path(path).rglob("*.nc")))
     if not filenames:
         raise FileNotFoundError(f"No FAST products found in {path}")
 
     products = []
-    for filename in tqdm(filenames, desc=f"Index FAST products for {year}", unit="file"):
-        product = inspect_fast_file(filename, year_start, year_stop)
-        if product is not None:
-            products.append(product)
+    progress_options = {
+        "total": len(filenames),
+        "desc": f"Index FAST products for {year}",
+        "unit": "file",
+    }
+    if workers == 1:
+        results = (
+            inspect_fast_file(filename, year_start, year_stop)
+            for filename in filenames
+        )
+        for product in tqdm(results, **progress_options):
+            if product is not None:
+                products.append(product)
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            futures = [
+                pool.submit(inspect_fast_file, filename, year_start, year_stop)
+                for filename in filenames
+            ]
+            for future in tqdm(as_completed(futures), **progress_options):
+                product = future.result()
+                if product is not None:
+                    products.append(product)
     if not products:
         raise ValueError(f"No FAST products overlap {year}")
 
@@ -363,6 +428,32 @@ def discover_orbit_candidates(orbit, cs, precipitation, fast_slices, support_sec
     return candidates
 
 
+def discover_orbit_file_candidates(orbit, cs_filename, p2_filename, p3_filename,
+                                   fast_products, interval_start, interval_stop,
+                                   support_seconds):
+    counts = empty_counts()
+    with open_product(cs_filename) as cs, \
+            open_product(p2_filename) as precipitation, \
+            open_product(p3_filename) as conductance:
+        validate_aligned_orbit(orbit, cs, precipitation, conductance)
+        fast_slices = [
+            load_fast_interval(product, interval_start, interval_stop)
+            for product in fast_products
+        ]
+        fast_slices = [part for part in fast_slices if part is not None]
+        candidates = discover_orbit_candidates(
+            orbit, cs, precipitation, fast_slices, support_seconds, counts
+        )
+
+    if candidates:
+        candidates = pd.concat(candidates, ignore_index=True)
+    else:
+        candidates = pd.DataFrame({
+            name: np.array([], dtype=float) for name in CANDIDATE_COLUMNS
+        })
+    return orbit, candidates, counts
+
+
 def select_unique_matches(candidates):
     if candidates.empty:
         result = candidates.copy()
@@ -562,20 +653,26 @@ def validate_saved_output(filename, sample_count, energy_count):
 #%% Complete run
 
 def build_dataset(args):
-    fast_products = index_fast_files(args.fast_path, args.year, args.fast_file)
+    workers = getattr(args, "workers", 1)
+    fast_products = index_fast_files(
+        args.fast_path, args.year, args.fast_file, workers
+    )
     cs_files = index_orbit_files(args.precipitation_cs_path, args.orbit)
     p2_files = index_orbit_files(args.precipitation_detector_path, args.orbit)
     p3_files = index_orbit_files(args.conductance_detector_path, args.orbit)
     if set(cs_files) != set(p2_files) or set(cs_files) != set(p3_files):
         raise ValueError("Selected CS, Product 2 and Product 3 orbit sets differ")
 
-    selected_orbits = select_image_orbits_for_year(cs_files, args.year, args.frame_support_seconds)
+    image_intervals = select_image_orbits_for_year(
+        cs_files, args.year, args.frame_support_seconds, workers,
+        return_intervals=True
+    )
 
-    if not selected_orbits:
+    if not image_intervals:
         raise ValueError(f"No IMAGE orbits overlap {args.year}")
-    cs_files = {orbit: cs_files[orbit] for orbit in selected_orbits}
-    p2_files = {orbit: p2_files[orbit] for orbit in selected_orbits}
-    p3_files = {orbit: p3_files[orbit] for orbit in selected_orbits}
+    cs_files = {orbit: cs_files[orbit] for orbit in image_intervals}
+    p2_files = {orbit: p2_files[orbit] for orbit in image_intervals}
+    p3_files = {orbit: p3_files[orbit] for orbit in image_intervals}
 
     output = Path(args.output)
     if output.exists() and not args.overwrite:
@@ -585,18 +682,59 @@ def build_dataset(args):
     candidates = []
     support_ns = int(round(args.frame_support_seconds * 1e9))
     year_start, year_stop = year_bounds(args.year)
-    progress = tqdm(sorted(cs_files), desc="Discover FAST--IMAGE matches", unit="orbit")
-    for orbit in progress:
-        with open_product(cs_files[orbit]) as cs, open_product(p2_files[orbit]) as precipitation, open_product(p3_files[orbit]) as conductance:
-            validate_aligned_orbit(orbit, cs, precipitation, conductance)
-            image_times = datetime64_ns(cs.time)
-            interval_start = max(int(image_times[0] - support_ns), year_start)
-            interval_stop = min(int(image_times[-1] + support_ns), year_stop - 1)
-            overlapping = [product for product in fast_products if product["stop_ns"] >= interval_start and product["start_ns"] <= interval_stop]
-            fast_slices = [load_fast_interval(product, interval_start, interval_stop) for product in overlapping]
-            fast_slices = [part for part in fast_slices if part is not None]
-            candidates.extend(discover_orbit_candidates(orbit, cs, precipitation, fast_slices, args.frame_support_seconds, counts))
-            progress.set_postfix(orbit=f"{orbit:04d}", supported=f"{counts['successful_candidate_count']:,}")
+    tasks = []
+    for orbit, (image_start, image_stop) in image_intervals.items():
+        interval_start = max(image_start - support_ns, year_start)
+        interval_stop = min(image_stop + support_ns, year_stop - 1)
+        overlapping = [
+            {"file_id": product["file_id"],
+             "path": product["path"],
+             "start_ns": product["start_ns"],
+             "stop_ns": product["stop_ns"]}
+            for product in fast_products
+            if product["stop_ns"] >= interval_start
+            and product["start_ns"] <= interval_stop
+        ]
+        tasks.append((orbit, cs_files[orbit], p2_files[orbit], p3_files[orbit],
+                      overlapping, interval_start, interval_stop,
+                      args.frame_support_seconds))
+
+    progress_options = {
+        "total": len(tasks),
+        "desc": "Discover FAST--IMAGE matches",
+        "unit": "orbit",
+    }
+    if workers == 1:
+        results = (discover_orbit_file_candidates(*task) for task in tasks)
+        progress = tqdm(results, **progress_options)
+        for orbit, orbit_candidates, orbit_counts in progress:
+            if not orbit_candidates.empty:
+                candidates.append(orbit_candidates)
+            for name, value in orbit_counts.items():
+                counts[name] += value
+            progress.set_postfix(
+                orbit=f"{orbit:04d}",
+                supported=f"{counts['successful_candidate_count']:,}"
+            )
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            futures = [
+                pool.submit(discover_orbit_file_candidates, *task)
+                for task in tasks
+            ]
+            progress = tqdm(
+                as_completed(futures), **progress_options
+            )
+            for future in progress:
+                orbit, orbit_candidates, orbit_counts = future.result()
+                if not orbit_candidates.empty:
+                    candidates.append(orbit_candidates)
+                for name, value in orbit_counts.items():
+                    counts[name] += value
+                progress.set_postfix(
+                    orbit=f"{orbit:04d}",
+                    supported=f"{counts['successful_candidate_count']:,}"
+                )
 
     all_candidates = (pd.concat(candidates, ignore_index=True) if candidates else pd.DataFrame({name: np.array([], dtype=float) for name in CANDIDATE_COLUMNS}))
     matches = select_unique_matches(all_candidates)
@@ -658,6 +796,7 @@ def main():
     parser.add_argument("--orbit", type=int, nargs="+")
     parser.add_argument("--fast-file", type=Path, nargs="+")
     parser.add_argument("--frame-support-seconds", type=float, default=DEFAULT_FRAME_SUPPORT_SECONDS)
+    parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
@@ -666,6 +805,8 @@ def main():
             raise FileNotFoundError(path)
     if not np.isfinite(args.frame_support_seconds) or args.frame_support_seconds < 0:
         raise ValueError("--frame-support-seconds must be finite and nonnegative")
+    if args.workers < 1:
+        raise ValueError("--workers must be at least 1")
     if args.fast_file:
         for filename in args.fast_file:
             if not filename.is_file():
