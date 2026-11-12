@@ -83,6 +83,10 @@ def values(variable):
 def indexed_values(variable, records):
     """Read sorted records through contiguous runs instead of point I/O."""
 
+    if not variable.dimensions or variable.dimensions[0] != "sample":
+        raise ValueError(
+            f"{variable.name} is not indexed by the sample dimension"
+        )
     records = np.asarray(records, dtype=np.int64)
     if records.size == 0:
         return np.empty((0, *variable.shape[1:]), dtype=variable.dtype)
@@ -656,7 +660,10 @@ def exact_group_value(array, name):
 
 def aggregate_pixel_batch(data, records, starts, stops, year, energy_count,
                           msis_altitude, image_fields, conductance_batch_size):
-    read_fields = set(SPECTRUM_FIELDS) | set(ATMOSPHERE_FIELDS.values())
+    read_fields = set(SPECTRUM_FIELDS) | {
+        source_name for name, source_name in ATMOSPHERE_FIELDS.items()
+        if name != "altitude_km"
+    }
     read_fields |= set(WEIGHTED_CONTEXT_FIELDS) | {
         name for name, _period in CIRCULAR_CONTEXT_FIELDS
     }

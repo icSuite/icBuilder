@@ -147,10 +147,17 @@ def make_conjunction(filename, year=2000, energy_count=4):
             )[:] = np.broadcast_to(array, (sample_count, altitude.size))
 
 
-def test_compiler_writes_sample_flags_and_pixel_aggregates(tmp_path):
+def test_compiler_writes_sample_flags_and_pixel_aggregates(tmp_path, monkeypatch):
     source = tmp_path / "conjunction.nc"
     output = tmp_path / "analysis.nc"
     make_conjunction(source)
+    original_indexed_values = AGGREGATE.indexed_values
+
+    def require_sample_dimension(variable, records):
+        assert variable.dimensions[0] == "sample"
+        return original_indexed_values(variable, records)
+
+    monkeypatch.setattr(AGGREGATE, "indexed_values", require_sample_dimension)
     args = SimpleNamespace(
         input=[source], annotations=None, output=output,
         maximum_detector_separation_deg=None,
