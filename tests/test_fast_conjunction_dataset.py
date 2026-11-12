@@ -22,13 +22,25 @@ except ImportError:
 
 SCRIPT = (
     Path(__file__).resolve().parents[1]
-    / "scripts/fast/06_generate_conjunction_dataset.py"
+    / "scripts/fast/generate_conjunction_dataset.py"
 )
 SPECIFICATION = importlib.util.spec_from_file_location(
     "fast_conjunction_dataset", SCRIPT
 )
 BUILDER = importlib.util.module_from_spec(SPECIFICATION)
 SPECIFICATION.loader.exec_module(BUILDER)
+
+
+def fast_products(paths):
+    for path in paths:
+        with Dataset(path, "w") as data:
+            data.createDimension("time", 1)
+            data.createVariable("fast_source_record", "i4", ("time",))[:] = [0]
+    return [
+        {"path": Path(path), "attrs": {},
+         "energy_count": 1, "file_id": index}
+        for index, path in enumerate(paths)
+    ]
 
 
 class GateGrid:
@@ -51,19 +63,17 @@ def test_temporal_support_is_closed_at_both_edges():
     np.testing.assert_array_equal(selected, [1, 2, 3])
 
 
-def test_cs_gate_requires_grid_coverage_and_finite_binned_data():
+def test_cs_gate_requires_only_wic_coverage_and_data():
     shape = (1, 1, 2)
     wic_coverage = np.ones(shape)
-    si13_coverage = np.ones(shape)
     wic = np.ones(shape)
-    si13 = np.ones(shape)
-    si13_coverage[0, 0, 1] = 0
+    wic[0, 0, 1] = np.nan
 
     selected, values, counts = BUILDER.cs_support_gate(
         GateGrid(), 0,
         np.array([70.0, 71.0, 72.0, np.nan]),
         np.array([1.0, 8.0, 23.0, 1.0]),
-        wic_coverage, si13_coverage, wic, si13,
+        wic_coverage, wic,
     )
 
     np.testing.assert_array_equal(selected, [0])
@@ -72,7 +82,7 @@ def test_cs_gate_requires_grid_coverage_and_finite_binned_data():
     assert counts == {
         "nonfinite_footprint_count": 1,
         "outside_cs_grid_count": 1,
-        "cs_coverage_data_rejection_count": 1,
+        "cs_wic_rejection_count": 1,
     }
 
 
@@ -133,7 +143,7 @@ class FakePrecipitation:
         return values[index]
 
 
-def test_exact_detector_pixel_without_image_pair_is_not_written(monkeypatch):
+def test_detector_pixel_with_wic_is_written_even_when_si13_is_missing(monkeypatch):
     monkeypatch.setattr(BUILDER, "make_detector_footprint_matcher", lambda *args: None)
     monkeypatch.setattr(
         BUILDER,
@@ -147,7 +157,8 @@ def test_exact_detector_pixel_without_image_pair_is_not_written(monkeypatch):
     )
     fast = {
         "source_file_id": 0,
-        "record": np.array([4, 5], dtype=np.int32),
+        "product_record": np.array([0, 1], dtype=np.int32),
+        "source_record": np.array([4, 5], dtype=np.int32),
         "time_ns": BUILDER.datetime64_ns(np.array([
             "2000-01-01T00:00:00", "2000-01-01T00:00:01"
         ], dtype="datetime64[ns]")),
@@ -161,14 +172,15 @@ def test_exact_detector_pixel_without_image_pair_is_not_written(monkeypatch):
     )
 
     assert len(candidates) == 1
-    assert candidates[0].fast_source_record.tolist() == [4]
-    assert counts["exact_detector_data_miss_count"] == 1
-    assert counts["successful_candidate_count"] == 1
+    assert candidates[0].fast_source_record.tolist() == [4, 5]
+    assert counts["detector_wic_rejection_count"] == 0
+    assert counts["successful_candidate_count"] == 2
 
 
 def test_unique_match_uses_supported_nearest_frame_and_deterministic_ties():
     frame = pd.DataFrame({
         "fast_source_file_id": [0, 0, 0, 1],
+        "fast_product_record": [7, 7, 7, 2],
         "fast_source_record": [7, 7, 7, 2],
         "fast_time_ns": [100, 100, 100, 50],
         "image_orbit": [86, 85, 85, 84],
@@ -229,7 +241,7 @@ class FakeProduct:
         self.method = attrs.get("method", "image_ratio")
 
 
-def test_product_source_mismatch_fails_before_matching(tmp_path):
+def test_product_method_is_irrelevant_when_frames_align(tmp_path):
     times = np.array(["2000-01-01"], dtype="datetime64[ns]")
     p2_path = tmp_path / "or_0085.nc"
     cs = FakeProduct(
@@ -248,8 +260,22 @@ def test_product_source_mismatch_fails_before_matching(tmp_path):
         }, times,
     )
 
-    with pytest.raises(ValueError, match="different Product 2"):
-        BUILDER.validate_orbit_products(85, cs, p2, p3)
+    p2.method = "zhang_paxton"
+    BUILDER.validate_aligned_orbit(85, cs, p2, p3)
+
+
+def test_image_fields_are_selected_only_when_present():
+    precipitation = types.SimpleNamespace(
+        fields={"wic_corrected", "si12", "E0", "Fe"}
+    )
+    conductance = types.SimpleNamespace(fields={"P", "H"})
+
+    p2_fields, p3_fields = BUILDER.available_image_fields(
+        precipitation, conductance
+    )
+
+    assert p2_fields == ("wic_corrected", "si12", "E0", "Fe")
+    assert p3_fields == ("P", "H")
 
 
 def test_atomic_schema_writer_preserves_unique_source_identity(tmp_path):
@@ -266,12 +292,15 @@ def test_atomic_schema_writer_preserves_unique_source_identity(tmp_path):
         **signatures,
     }
     with BUILDER.create_output(
-        output, 2, 3, [tmp_path / "a.nc"], {}, attrs
+        output, 2, 3, np.array([70.0, 71.0]),
+        fast_products([tmp_path / "a.nc"]),
+        (), (), {}, attrs
     ) as data:
         data.variables["fast_source_file_id"][:] = [0, 0]
+        data.variables["fast_product_record"][:] = [0, 1]
         data.variables["fast_source_record"][:] = [4, 5]
 
-    BUILDER.validate_saved_output(output, 2, 3, signatures)
+    BUILDER.validate_saved_output(output, 2, 3)
 
     with Dataset(output) as data:
         assert data.product_type == "fast_image_conjunctions"
@@ -287,33 +316,43 @@ def test_mixed_fast_energy_widths_are_padded_and_recorded(tmp_path):
         source = xr.Dataset(coords={
             "time": np.array(["2000-01-01"], dtype="datetime64[ns]"),
             "energy_index": np.arange(energy_count),
+            "msis_altitude_km": np.array([70.0, 71.0]),
         })
-        for name in BUILDER.FAST_SCALAR_FIELDS:
-            source[name] = ("time", np.array([file_id + 1]))
-        for name in BUILDER.FAST_SPECTRAL_FIELDS:
-            source[name] = (
-                ("time", "energy_index"),
-                np.full((1, energy_count), file_id + 1.0),
-            )
+        source["fast_source_record"] = ("time", np.array([10 + file_id], dtype=np.int32))
+        source["footprint_mlat"] = ("time", np.array([70.0 + file_id]))
+        source["footprint_mlt"] = ("time", np.array([2.0 + file_id]))
+        source["fast_energy_ev"] = (
+            ("time", "energy_index"),
+            np.full((1, energy_count), file_id + 1.0),
+        )
+        source["msis_oxygen_cm3"] = (
+            ("time", "msis_altitude_km"),
+            np.full((1, 2), 100.0 + file_id),
+        )
         source.to_netcdf(filename)
         source_files.append(filename)
         products.append({
             "file_id": file_id,
             "path": filename,
             "energy_count": energy_count,
+            "attrs": {},
         })
 
     matches = pd.DataFrame({
         "fast_source_file_id": [0, 1],
-        "fast_source_record": [0, 0],
+        "fast_product_record": [0, 0],
+        "fast_source_record": [10, 11],
     })
     output = tmp_path / "mixed_energy.nc"
     with BUILDER.create_output(
         output,
         sample_count=2,
         energy_count=4,
-        source_files=source_files,
-        metadata={},
+        msis_altitude=np.array([70.0, 71.0]),
+        fast_products=products,
+        p2_fields=(),
+        p3_fields=(),
+        image_metadata={},
         root_attrs={"product_type": "fast_image_conjunctions", "schema_version": 1},
     ) as target:
         BUILDER.write_fast_fields(target, matches, products)
@@ -326,6 +365,10 @@ def test_mixed_fast_energy_widths_are_padded_and_recorded(tmp_path):
         np.testing.assert_array_equal(spectrum[0, :2], [1.0, 1.0])
         np.testing.assert_array_equal(np.ma.getmaskarray(spectrum[0]), [0, 0, 1, 1])
         np.testing.assert_array_equal(spectrum[1], [2.0, 2.0, 2.0, 2.0])
+        np.testing.assert_array_equal(
+            data.variables["msis_oxygen_cm3"][:],
+            [[100.0, 100.0], [101.0, 101.0]],
+        )
 
 
 def test_duplicate_source_records_fail_saved_output_validation(tmp_path):
@@ -337,10 +380,13 @@ def test_duplicate_source_records_fail_saved_output_validation(tmp_path):
         **signatures,
     }
     with BUILDER.create_output(
-        output, 2, 2, [tmp_path / "a.nc"], {}, attrs
+        output, 2, 2, np.array([70.0, 71.0]),
+        fast_products([tmp_path / "a.nc"]),
+        (), (), {}, attrs
     ) as data:
         data.variables["fast_source_file_id"][:] = [0, 0]
+        data.variables["fast_product_record"][:] = [4, 4]
         data.variables["fast_source_record"][:] = [4, 4]
 
     with pytest.raises(ValueError, match="duplicate FAST records"):
-        BUILDER.validate_saved_output(output, 2, 2, signatures)
+        BUILDER.validate_saved_output(output, 2, 2)
