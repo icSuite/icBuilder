@@ -1,0 +1,251 @@
+FAST processing and analysis
+============================
+
+Design principle
+----------------
+
+The production workflow consists of five self-contained scripts. Each script
+contains the code required for its stage and keeps the main scientific
+calculation linear and visible. Small local functions may be used for distinct
+calculations or genuine repetition, but the workflow is not distributed across
+a collection of small modules.
+
+After FAST archive processing is complete, no later stage should need to read
+the raw FAST archive, reload the ephemeris collection, run MSIS, or reconstruct
+the Dombeck quantities.
+
+
+1) combine_ephemeris_data.py
+----------------------------
+
+Purpose:
+    Combine the complete FAST ephemeris collection into one validated file.
+
+Inputs:
+    1. Directory containing the FAST ephemeris source files.
+    2. Output filename.
+
+Work:
+    - Read every ephemeris source file.
+    - Validate time and position fields.
+    - Sort all records chronologically.
+    - Remove identical duplicate records at file boundaries.
+    - Reject conflicting duplicate positions.
+    - Record source-file provenance.
+
+Output:
+    One combined FAST ephemeris NetCDF file suitable for interpolation during
+    archive processing.
+
+
+2) process_fast_archive.py
+--------------------------
+
+Purpose:
+    Convert the raw FAST EES archive into self-contained, analysis-ready FAST
+    products. This is the only production stage that reads raw EES files.
+
+Inputs:
+    1. Combined FAST ephemeris file.
+    2. Raw FAST EES archive directory.
+    3. MSIS space-weather indices file.
+    4. Output directory.
+
+Work for each EES source file:
+    - Read and validate the particle measurements and calibration tables.
+    - Interpolate the spacecraft ephemeris to the FAST measurement times.
+    - Map the spacecraft track to the agreed ionospheric reference height.
+    - Calculate pitch angles, loss cones and magnetic-field quantities.
+    - Construct the Earthward and anti-Earthward differential spectra.
+    - Calculate full-spectrum, 500+ eV and net number flux, energy flux and
+      mean energy.
+    - Preserve the energy centres, energy widths and differential spectra so
+      later pixel aggregation can be performed from the channels.
+    - Calculate and store the Dombeck intensity quantities, availability and
+      intense/weak label for every FAST measurement. This label describes
+      spectral intensity for mechanism identifiability; it is not a data-quality
+      flag and is not a general precipitation-selection criterion.
+    - Evaluate MSIS and store the atmospheric profiles needed to recalculate
+      Rees conductance after later pixel aggregation. Store the altitude grid,
+      neutral densities, mass density, temperature, space-weather drivers and
+      MSIS sampling provenance.
+    - Calculate per-measurement Rees Hall and Pedersen conductance.
+    - Calculate the Robinson-equivalent energy and energy flux.
+    - Store instrument flags, spectral support and other quality information.
+    - Store source filename, source record number, processing configuration and
+      complete provenance.
+
+Output:
+    One processed NetCDF file per raw EES file, preserving the archive's
+    year/month hierarchy. Each file contains everything required by the
+    conjunction and analysis stages.
+
+Restart behaviour:
+    - Write products atomically.
+    - Skip complete products generated from the same source and configuration.
+    - Record failures without discarding successful products.
+
+
+3) generate_conjunction_dataset.py
+----------------------------------
+
+Purpose:
+    Identify all objective FAST--IMAGE conjunctions and combine the relevant
+    measurements into one dataset. This stage performs matching, not FAST
+    particle physics.
+
+Inputs:
+    1. Processed FAST archive directory.
+    2. IMAGE precipitation CS-product directory.
+    3. IMAGE precipitation detector-product directory.
+    4. IMAGE conductance detector-product directory.
+    5. Output filename.
+    6. Year and optional restricted orbit/file selections.
+
+Work:
+    - Index the processed FAST files and IMAGE orbits.
+    - Use the precipitation CS product as the inexpensive temporal and spatial
+      gate before loading detector-level products.
+    - Load precipitation and conductance detector products only for supported
+      IMAGE frames.
+    - Match each supported FAST footprint to the appropriate IMAGE detector
+      pixel and retain the match diagnostics.
+    - Copy all FAST fields required for later analysis, including spectra,
+      Dombeck quantities and stored MSIS atmosphere profiles.
+    - Append the limited IMAGE fields needed for comparison, together with
+      orbit, frame, pixel, time-offset and detector-separation information.
+    - Preserve FAST source-file and source-record identities.
+    - Include every objective conjunction. Do not apply manual annotations,
+      Dombeck population selection or scientific analysis filters here.
+
+The combined ephemeris file is not an input to this stage because spacecraft
+positions and mapped footprints are already stored in the processed FAST
+products.
+
+Output:
+    One conjunction NetCDF file per year containing all matched FAST
+    measurements and their associated IMAGE detector pixels.
+
+
+4) aggregate_conjunctions.py
+----------------------------
+
+Purpose:
+    Apply the scientific selections once and compile a compact analysis dataset
+    containing both sample-level scalars and physically aggregated IMAGE-pixel
+    records. Do not make publication figures in this stage.
+
+Inputs:
+    1. One or more yearly conjunction datasets.
+    2. Optional FAST--IMAGE frame annotations.
+    3. Geometric and contextual selection options.
+    4. Output filename.
+
+Selection:
+    - Require valid FAST instrument data and sufficient spectral support for the
+      quantity being aggregated.
+    - Optional annotation flag 1 only.
+    - Optional maximum detector-centre separation.
+    - Optional maximum FAST altitude.
+    - Optional minimum solar-zenith angle.
+    - Optional maximum absolute FAST--IMAGE time offset.
+    - Retain the Dombeck intense/weak label for diagnostic stratification, but
+      never reject measurements merely because they are Dombeck-weak.
+
+Pixel aggregation:
+    - Group selected FAST measurements by IMAGE orbit, frame, detector row and
+      detector column.
+    - Use the effective measurement duration derived from the stored Dombeck
+      window span and record count when averaging native FAST measurements. The
+      weight is an exposure-duration weight, not a FAST--IMAGE time-offset
+      weight.
+    - Conservatively regrid mixed 48- and 96-channel spectra by energy-bin
+      overlap before aggregation. Do not average incompatible channel indices or
+      interpolate differential spectra at bin centres.
+    - Average differential spectra channel by channel using the exposure-duration
+      weights and channel-specific finite support.
+    - Derive number flux, energy flux and mean energy from the aggregated
+      spectrum rather than taking the median of per-measurement mean energies.
+    - Combine the stored MSIS atmospheric profiles consistently with the
+      exposure-duration weighting used for the spectrum.
+    - Exposure-average the mapped magnetic-field magnitude and the remaining
+      FAST context required by the conductance calculation.
+    - Recalculate Rees conductance from the aggregated spectrum, aggregated
+      atmosphere and aggregated magnetic-field magnitude.
+    - Derive Robinson-equivalent quantities from the aggregated conductances.
+    - Verify that repeated IMAGE values within each orbit/frame/pixel group are
+      identical, then store one copy rather than averaging them.
+    - Do not reopen raw EES files and do not run MSIS.
+
+Output:
+    One compact analysis NetCDF file containing:
+
+    - Sample-level scalar quantities needed for coverage and before/after
+      selection distributions. Do not copy the large spectra or MSIS profiles
+      into this sample table.
+    - A Boolean flag for every individual selection criterion and their combined
+      selection, so rejection causes remain auditable.
+    - One selected, aggregated record per IMAGE detector pixel, including the
+      aggregated FAST moments and conductances, IMAGE quantities and aggregation
+      counts.
+    - The explicit selection limits and aggregation rules as concise file
+      attributes.
+
+Changing a sample-level selection requires rebuilding this compact dataset.
+Changing a figure does not.
+
+
+5) plot_conjunction_analysis.py
+-------------------------------
+
+Purpose:
+    Generate and revise the scientific figures and tables quickly from the
+    compact analysis dataset without reopening the large yearly conjunction
+    files or repeating pixel aggregation.
+
+Inputs:
+    1. Compact analysis NetCDF from aggregate_conjunctions.py.
+    2. Output directory.
+
+Work and output:
+    - Coverage, validity and selection summaries, including rejection counts by
+      criterion.
+    - Combined-year distributions before and after the scientific selections.
+    - Optional year-resolved coverage distributions.
+    - FAST--IMAGE energy, flux and conductance comparisons using pixel-aggregated
+      FAST quantities as the primary scientific view.
+    - Overall and six-sector MLT-stratified comparisons using 22--02, 02--06,
+      06--10, 10--14, 14--18 and 18--22 MLT.
+    - Dombeck intense/weak panels only as diagnostic stratification, never as a
+      quality-selected primary result.
+    - Pearson and Spearman correlations.
+    - Figures and compact CSV summary tables.
+
+
+Supporting scripts
+------------------
+
+The manual FAST--IMAGE annotation program remains a separate interactive tool.
+Validation programs for SPEDAS equivalence, sensitivity tests, MSIS cadence and
+GLOW are research/validation scripts rather than production pipeline stages.
+Production scripts must not import a prototype or validation script.
+
+
+Refactoring sequence
+--------------------
+
+1. Preserve representative products and analysis tables from the current code
+   as numerical references.
+2. Consolidate the present prototype, archive processor and Dombeck sidecar
+   calculations into process_fast_archive.py.
+3. Verify one EES file field by field against the current products.
+4. Verify a small multi-file archive subset, including restart and failure
+   handling.
+5. Adapt generate_conjunction_dataset.py to copy the new complete FAST schema.
+6. Verify conjunction identities and IMAGE matches against an existing year.
+7. Implement aggregate_conjunctions.py and verify its selection accounting,
+   mixed-energy-grid handling and pixel moments against representative current
+   results.
+8. Implement plot_conjunction_analysis.py against the compact analysis dataset.
+9. Verify the sample-level distributions, pixel-aggregated comparisons and MLT
+   panels against representative outputs from the current analysis script.
