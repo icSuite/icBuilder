@@ -11,6 +11,7 @@ The precipitation method does not affect the matching.
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
+from multiprocessing import get_context
 from pathlib import Path
 
 from icreader import open_product
@@ -572,27 +573,101 @@ def write_candidate_fields(output, matches):
         output.variables[name][:] = matches[name].to_numpy()
 
 
-def write_fast_fields(output, matches, fast_products):
+def read_fast_fields(product, positions, records, source_records):
+    first_record = int(records.min())
+    stop_record = int(records.max()) + 1
+    relative_records = records - first_record
+    fields = {}
+    dimensions = {}
+
+    with Dataset(product["path"]) as source:
+        raw_records = np.asarray(
+            source.variables["fast_source_record"][first_record:stop_record]
+        )[relative_records]
+        if not np.array_equal(raw_records, source_records):
+            raise ValueError(f"FAST source identity changed in {product['path']}")
+
+        for name, variable in source.variables.items():
+            if not variable.dimensions or variable.dimensions[0] != "time" or name == "time":
+                continue
+            source_key = (
+                slice(first_record, stop_record),
+                *[slice(None) for _ in variable.dimensions[1:]],
+            )
+            fields[name] = variable[source_key][relative_records]
+            dimensions[name] = variable.dimensions[1:]
+
+    return {"positions": positions,
+            "energy_count": product["energy_count"],
+            "fields": fields,
+            "dimensions": dimensions}
+
+
+def write_fast_batch(output, results):
+    positions = np.concatenate([result["positions"] for result in results])
+    order = np.argsort(positions)
+    positions = positions[order]
+    if positions[-1] - positions[0] + 1 == positions.size:
+        output_positions = slice(int(positions[0]), int(positions[-1]) + 1)
+    else:
+        output_positions = positions
+    energy_counts = np.concatenate([
+        np.full(result["positions"].size, result["energy_count"], dtype=np.int16)
+        for result in results
+    ])[order]
+    output.variables["fast_energy_channel_count"][output_positions] = energy_counts
+
+    field_names = results[0]["fields"]
+    for name in field_names:
+        output_variable = output.variables[name]
+        values = np.ma.masked_all(
+            (len(order), *output_variable.shape[1:]), dtype=output_variable.dtype
+        )
+        start = 0
+        for result in results:
+            count = result["positions"].size
+            trailing = result["dimensions"][name]
+            target_key = [slice(start, start + count)]
+            for dimension in trailing:
+                if dimension == "energy_index":
+                    target_key.append(slice(0, result["energy_count"]))
+                else:
+                    target_key.append(slice(None))
+            values[tuple(target_key)] = result["fields"][name]
+            start += count
+        output_variable[output_positions] = values[order]
+
+
+def write_fast_fields(output, matches, fast_products, workers=1, pool=None):
     products = {product["file_id"]: product for product in fast_products}
-    grouped = matches.groupby("fast_source_file_id", sort=True)
-    for file_id, selected in tqdm(grouped, total=grouped.ngroups, desc="Copy FAST fields", unit="file"):
+    groups = []
+    for file_id, selected in matches.groupby("fast_source_file_id", sort=True):
         product = products[int(file_id)]
-        positions = selected.index.to_numpy(dtype=int)
-        records = selected.fast_product_record.to_numpy(dtype=int)
-        with Dataset(product["path"]) as source:
-            raw_records = np.asarray(source.variables["fast_source_record"][records])
-            if not np.array_equal(raw_records, selected.fast_source_record.to_numpy()):
-                raise ValueError(f"FAST source identity changed in {product['path']}")
-            output.variables["fast_energy_channel_count"][positions] = product["energy_count"]
-            for name, variable in source.variables.items():
-                if not variable.dimensions or variable.dimensions[0] != "time" or name == "time":
-                    continue
-                trailing = variable.dimensions[1:]
-                source_key = (records, *[slice(None) for _ in trailing])
-                target_key = [positions]
-                for dimension in trailing:
-                    target_key.append(slice(0, product["energy_count"]) if dimension == "energy_index" else slice(None))
-                output.variables[name][tuple(target_key)] = source.variables[name][source_key]
+        product = {"path": product["path"],
+                   "energy_count": product["energy_count"]}
+        groups.append((product,
+                       selected.index.to_numpy(dtype=int),
+                       selected.fast_product_record.to_numpy(dtype=int),
+                       selected.fast_source_record.to_numpy()))
+
+    batch_size = max(8, workers * 2)
+    progress = tqdm(total=len(groups), desc="Copy FAST fields", unit="file")
+    if workers == 1:
+        for start in range(0, len(groups), batch_size):
+            batch = groups[start:start + batch_size]
+            results = [read_fast_fields(*task) for task in batch]
+            write_fast_batch(output, results)
+            progress.update(len(batch))
+    else:
+        if pool is None:
+            raise ValueError("Parallel FAST copying requires a worker pool")
+        for start in range(0, len(groups), batch_size):
+            batch = groups[start:start + batch_size]
+            futures = [pool.submit(read_fast_fields, *task) for task in batch]
+            results = [future.result() for future in as_completed(futures)]
+            write_fast_batch(output, results)
+            progress.update(len(batch))
+    progress.close()
 
 
 def gathered_field(product, name, frames, rows, columns):
@@ -613,29 +688,84 @@ def gathered_field(product, name, frames, rows, columns):
     return gathered
 
 
-def write_image_fields(output, matches, p2_files, p3_files, p2_fields, p3_fields):
-    grouped = matches.groupby("image_orbit", sort=True)
-    for orbit, selected in tqdm(
-        grouped, total=grouped.ngroups, desc="Copy IMAGE fields", unit="orbit"):
-        orbit = int(orbit)
-        positions = selected.index.to_numpy(dtype=int)
-        frames = selected.image_frame.to_numpy(dtype=int)
-        rows = selected.detector_row.to_numpy(dtype=int)
-        columns = selected.detector_column.to_numpy(dtype=int)
-        with open_product(p2_files[orbit]) as precipitation, open_product(p3_files[orbit]) as conductance:
-            if hasattr(precipitation, "wic_source_index"):
-                output.variables["image_wic_source_index"][positions] = precipitation.wic_source_index[frames]
-            if hasattr(precipitation, "Kp"):
-                output.variables["image_Kp"][positions] = precipitation.Kp[frames]
-            if hasattr(precipitation, "Kp_interval_start"):
-                kp_time = datetime64_ns(precipitation.Kp_interval_start)
-                output.variables["image_Kp_interval_start"][positions] = kp_time[frames] / 1e9
+def read_image_fields(orbit, positions, frames, rows, columns,
+                      p2_filename, p3_filename, p2_fields, p3_fields):
+    fields = {}
+    with open_product(p2_filename) as precipitation, \
+            open_product(p3_filename) as conductance:
+        if hasattr(precipitation, "wic_source_index"):
+            fields["image_wic_source_index"] = precipitation.wic_source_index[frames]
+        if hasattr(precipitation, "Kp"):
+            fields["image_Kp"] = precipitation.Kp[frames]
+        if hasattr(precipitation, "Kp_interval_start"):
+            kp_time = datetime64_ns(precipitation.Kp_interval_start)
+            fields["image_Kp_interval_start"] = kp_time[frames] / 1e9
 
-            for product, fields in ((precipitation, p2_fields), (conductance, p3_fields)):
-                for name in fields:
-                    if name not in product.fields:
-                        continue
-                    output.variables[f"image_{name}"][positions] = gathered_field(product, name, frames, rows, columns)
+        for product, names in ((precipitation, p2_fields),
+                               (conductance, p3_fields)):
+            for name in names:
+                if name in product.fields:
+                    fields[f"image_{name}"] = gathered_field(
+                        product, name, frames, rows, columns
+                    )
+    return {"orbit": orbit, "positions": positions, "fields": fields}
+
+
+def write_image_batch(output, results):
+    positions = np.concatenate([result["positions"] for result in results])
+    order = np.argsort(positions)
+    positions = positions[order]
+    if positions[-1] - positions[0] + 1 == positions.size:
+        output_positions = slice(int(positions[0]), int(positions[-1]) + 1)
+    else:
+        output_positions = positions
+
+    field_names = set()
+    for result in results:
+        field_names.update(result["fields"])
+    for name in field_names:
+        output_variable = output.variables[name]
+        values = np.ma.masked_all(len(order), dtype=output_variable.dtype)
+        start = 0
+        for result in results:
+            count = result["positions"].size
+            if name in result["fields"]:
+                values[start:start + count] = result["fields"][name]
+            start += count
+        output_variable[output_positions] = values[order]
+
+
+def write_image_fields(output, matches, p2_files, p3_files,
+                       p2_fields, p3_fields, workers=1, pool=None):
+    groups = []
+    for orbit, selected in matches.groupby("image_orbit", sort=True):
+        orbit = int(orbit)
+        groups.append((orbit,
+                       selected.index.to_numpy(dtype=int),
+                       selected.image_frame.to_numpy(dtype=int),
+                       selected.detector_row.to_numpy(dtype=int),
+                       selected.detector_column.to_numpy(dtype=int),
+                       p2_files[orbit], p3_files[orbit],
+                       p2_fields, p3_fields))
+
+    batch_size = max(8, workers * 2)
+    progress = tqdm(total=len(groups), desc="Copy IMAGE fields", unit="orbit")
+    if workers == 1:
+        for start in range(0, len(groups), batch_size):
+            batch = groups[start:start + batch_size]
+            results = [read_image_fields(*task) for task in batch]
+            write_image_batch(output, results)
+            progress.update(len(batch))
+    else:
+        if pool is None:
+            raise ValueError("Parallel IMAGE copying requires a worker pool")
+        for start in range(0, len(groups), batch_size):
+            batch = groups[start:start + batch_size]
+            futures = [pool.submit(read_image_fields, *task) for task in batch]
+            results = [future.result() for future in as_completed(futures)]
+            write_image_batch(output, results)
+            progress.update(len(batch))
+    progress.close()
 
 
 def validate_saved_output(filename, sample_count, energy_count):
@@ -771,17 +901,29 @@ def build_dataset(args):
     partial = output.with_suffix(output.suffix + ".partial")
     if partial.exists():
         partial.unlink()
+    copy_pool = (
+        ProcessPoolExecutor(max_workers=workers, mp_context=get_context("spawn"))
+        if workers > 1 else None
+    )
     try:
         with create_output(partial, len(matches), energy_count, msis_altitude, fast_products, p2_fields, p3_fields, image_metadata, root_attrs) as target:
             write_candidate_fields(target, matches)
-            write_fast_fields(target, matches, fast_products)
-            write_image_fields(target, matches, p2_files, p3_files, p2_fields, p3_fields)
+            write_fast_fields(
+                target, matches, fast_products, workers, copy_pool
+            )
+            write_image_fields(
+                target, matches, p2_files, p3_files, p2_fields, p3_fields,
+                workers, copy_pool
+            )
         validate_saved_output(partial, len(matches), energy_count)
         partial.replace(output)
     except Exception:
         if partial.exists():
             partial.unlink()
         raise
+    finally:
+        if copy_pool is not None:
+            copy_pool.shutdown(cancel_futures=True)
     print(f"Saved {len(matches):,} FAST--IMAGE conjunctions: {output}")
 
 
