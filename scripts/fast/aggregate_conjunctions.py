@@ -81,7 +81,7 @@ def values(variable):
 
 
 def indexed_values(variable, records):
-    """Read sorted records through contiguous runs instead of point I/O."""
+    """Read records through contiguous runs and restore the requested order."""
 
     if not variable.dimensions or variable.dimensions[0] != "sample":
         raise ValueError(
@@ -90,17 +90,22 @@ def indexed_values(variable, records):
     records = np.asarray(records, dtype=np.int64)
     if records.size == 0:
         return np.empty((0, *variable.shape[1:]), dtype=variable.dtype)
-    breaks = np.flatnonzero(np.diff(records) > 1) + 1
+    order = np.argsort(records, kind="stable")
+    sorted_records = records[order]
+    breaks = np.flatnonzero(np.diff(sorted_records) > 1) + 1
     starts = np.r_[0, breaks]
     stops = np.r_[breaks, records.size]
     parts = []
     for first, stop in zip(starts, stops):
-        source_start = int(records[first])
-        source_stop = int(records[stop - 1]) + 1
+        source_start = int(sorted_records[first])
+        source_stop = int(sorted_records[stop - 1]) + 1
         block = variable[source_start:source_stop]
-        local = records[first:stop] - source_start
+        local = sorted_records[first:stop] - source_start
         parts.append(block[local])
     array = np.concatenate(parts, axis=0)
+    inverse = np.empty_like(order)
+    inverse[order] = np.arange(order.size)
+    array = array[inverse]
     if np.ma.isMaskedArray(array):
         if np.issubdtype(array.dtype, np.floating):
             array = array.filled(np.nan)
@@ -280,11 +285,11 @@ def selected_pixel_runs(data, selected):
         for name in PIXEL_KEY_FIELDS
     ]
     keys = np.rec.fromarrays(arrays, names="orbit,frame,row,column")
+    order = np.argsort(keys, order=keys.dtype.names, kind="stable")
+    selected_records = selected_records[order]
+    keys = keys[order]
     starts = np.r_[0, np.flatnonzero(keys[1:] != keys[:-1]) + 1]
     stops = np.r_[starts[1:], selected_records.size]
-    run_keys = keys[starts]
-    if np.unique(run_keys).size != run_keys.size:
-        raise ValueError("IMAGE pixel samples are not contiguous in the conjunction file")
     return selected_records, starts, stops
 
 

@@ -206,6 +206,37 @@ def test_selection_filters_samples_but_not_dombeck_weak(tmp_path):
         assert len(data.dimensions["pixel"]) == 1
 
 
+def test_compiler_groups_noncontiguous_pixel_samples(tmp_path):
+    source = tmp_path / "conjunction.nc"
+    output = tmp_path / "analysis.nc"
+    make_conjunction(source)
+    with Dataset(source, "r+") as data:
+        data.variables["image_time"][:] = [100.0, 200.0, 100.0, 200.0]
+        data.variables["image_frame"][:] = [0, 1, 0, 1]
+        data.variables["detector_row"][:] = [2, 3, 2, 3]
+        data.variables["detector_column"][:] = [4, 5, 4, 5]
+        data.variables["image_sza"][:] = [110.0, 115.0, 110.0, 115.0]
+    args = SimpleNamespace(
+        input=[source], annotations=None, output=output,
+        maximum_detector_separation_deg=None,
+        maximum_altitude_km=None, minimum_sza_deg=None,
+        maximum_absolute_time_offset_seconds=None,
+        record_batch_size=10, conductance_batch_size=10,
+        overwrite=False,
+    )
+
+    AGGREGATE.build_dataset(args)
+
+    with Dataset(output) as data:
+        assert len(data.dimensions["pixel"]) == 2
+        np.testing.assert_array_equal(
+            data.variables["pixel_fast_sample_count"][:], [2, 2]
+        )
+        np.testing.assert_array_equal(
+            data.variables["pixel_image_frame"][:], [0, 1]
+        )
+
+
 def test_annotations_select_only_accepted_tracks(tmp_path):
     source = tmp_path / "conjunction.nc"
     output = tmp_path / "analysis.nc"
