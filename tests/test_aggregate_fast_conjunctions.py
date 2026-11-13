@@ -244,8 +244,8 @@ def test_annotations_select_only_accepted_tracks(tmp_path):
     make_conjunction(source)
     annotations.write_text(
         "year,image_orbit,image_frame,image_time,fast_source_file,accepted,n_fast_samples\n"
-        "2000,85,0,1970-01-01T00:01:40,fast_source.nc,1,2\n"
-        "2000,85,1,1970-01-01T00:03:20,fast_source.nc,0,2\n"
+        "2000,85,0,1970-01-01T00:01:40,fast_source.nc,1,999\n"
+        "2000,85,1,1970-01-01T00:03:20,fast_source.nc,0,999\n"
     )
     args = SimpleNamespace(
         input=[source], annotations=annotations, output=output,

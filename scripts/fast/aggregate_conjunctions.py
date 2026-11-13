@@ -126,7 +126,7 @@ def read_annotations(filename):
         return {}
     required = {
         "year", "image_orbit", "image_frame", "image_time",
-        "fast_source_file", "accepted", "n_fast_samples",
+        "fast_source_file", "accepted",
     }
     with Path(filename).open(newline="") as file:
         reader = csv.DictReader(file)
@@ -147,10 +147,7 @@ def read_annotations(filename):
         )
         if key in annotations:
             raise ValueError(f"duplicate FAST annotation key {key}")
-        annotations[key] = {
-            "accepted": accepted,
-            "n_fast_samples": int(row["n_fast_samples"]),
-        }
+        annotations[key] = accepted
     return annotations
 
 
@@ -176,8 +173,7 @@ def annotation_status(data, year, annotations):
     ])
     annotation_keys = np.empty(len(rows), dtype=key_dtype)
     annotation_value = np.empty(len(rows), dtype=np.int8)
-    expected_count = np.empty(len(rows), dtype=np.int64)
-    for index, (key, row) in enumerate(rows):
+    for index, (key, accepted) in enumerate(rows):
         source_name = key[3]
         if source_name not in source_lookup:
             raise ValueError(
@@ -186,13 +182,11 @@ def annotation_status(data, year, annotations):
         annotation_keys[index] = (
             key[1], key[2], source_lookup[source_name],
         )
-        annotation_value[index] = row["accepted"]
-        expected_count[index] = row["n_fast_samples"]
+        annotation_value[index] = accepted
 
     order = np.argsort(annotation_keys, kind="stable")
     annotation_keys = annotation_keys[order]
     annotation_value = annotation_value[order]
-    expected_count = expected_count[order]
 
     sample_keys = np.empty(count, dtype=key_dtype)
     sample_keys["orbit"] = values(data.variables["image_orbit"])
@@ -204,14 +198,6 @@ def annotation_status(data, year, annotations):
     matched = np.zeros(count, dtype=bool)
     matched[within] = annotation_keys[position[within]] == sample_keys[within]
     status[matched] = annotation_value[position[matched]]
-
-    matched_count = np.bincount(position[matched], minlength=len(rows))
-    if np.any(matched_count != expected_count):
-        index = int(np.flatnonzero(matched_count != expected_count)[0])
-        raise ValueError(
-            f"FAST annotation sample count changed in {year}: expected "
-            f"{expected_count[index]}, found {matched_count[index]}"
-        )
     return status
 
 
