@@ -23,7 +23,7 @@ from icphysics import (
     proton_correct_images,
 )
 from netCDF4 import Dataset, date2num
-from scipy.ndimage import convolve
+from scipy.ndimage import convolve1d
 
 from .kp import load_gfz_kp, match_gfz_kp
 from .fuvdetector import (
@@ -31,7 +31,6 @@ from .fuvdetector import (
     PREPROCESSING_LABEL,
     SCHEMA_VERSION as FUV_SCHEMA_VERSION,
     SOURCE_TIME_DECODING,
-    source_identity,
 )
 
 
@@ -278,13 +277,6 @@ def load_fuv_detector(filename, include_unsubtracted=False):
                 source.detector_column, dtype=int
             ).copy(),
         }
-        for sensor in ("wic", "si12", "si13"):
-            product[f"source_{sensor}"] = source.attrs.get(
-                f"source_{sensor}", ""
-            )
-            product[f"source_{sensor}_sha256"] = source.attrs.get(
-                f"source_{sensor}_sha256", ""
-            )
         for name in TIME_FIELDS:
             if name.endswith("_time") or name == "time":
                 product[name] = np.asarray(
@@ -310,7 +302,6 @@ def load_fuv_detector(filename, include_unsubtracted=False):
                 dtype = bool if name.endswith("_valid") else float
                 product[name] = np.asarray(source.read(name), dtype=dtype)
 
-    product.update(source_identity(filename))
     return product
 
 
@@ -401,16 +392,26 @@ def resolve_smoothing_configuration(
 
 
 def gaussian_smoothing_kernel(width):
-    """Return one normalized Gaussian kernel for a positive pixel sigma."""
+    """Return one normalized 1-D Gaussian kernel for a positive pixel sigma."""
 
     width = _smoothing_width(width, "sensor")
     if width == 0:
         raise ValueError("Gaussian smoothing width must be positive")
     radius = max(1, int(np.ceil(4 * width)))
     coordinate = np.arange(-radius, radius + 1, dtype=float)
-    row, column = np.meshgrid(coordinate, coordinate, indexing="ij")
-    weights = np.exp(-(row**2 + column**2) / (2 * width**2))
+    weights = np.exp(-(coordinate**2) / (2 * width**2))
     return weights / np.sum(weights)
+
+
+def convolve_detector_frame(values, weights):
+    """Apply one zero-padded separable detector-space convolution."""
+
+    filtered = convolve1d(
+        values, weights, axis=0, mode="constant", cval=0.0
+    )
+    return convolve1d(
+        filtered, weights, axis=1, mode="constant", cval=0.0
+    )
 
 
 def smooth_detector_sensor(
@@ -446,14 +447,11 @@ def smooth_detector_sensor(
 
     for frame in range(counts.shape[0]):
         count_valid = valid[frame] & np.isfinite(counts[frame])
-        normalization = convolve(
-            count_valid.astype(float), weights, mode="constant", cval=0.0
+        normalization = convolve_detector_frame(
+            count_valid.astype(float), weights
         )
-        numerator = convolve(
-            np.where(count_valid, counts[frame], 0.0),
-            weights,
-            mode="constant",
-            cval=0.0,
+        numerator = convolve_detector_frame(
+            np.where(count_valid, counts[frame], 0.0), weights
         )
         output_valid = count_valid & (normalization > 0)
         smoothed[frame] = np.divide(
@@ -464,17 +462,13 @@ def smooth_detector_sensor(
         )
 
         variance_valid = count_valid & np.isfinite(variance[frame])
-        missing_variance_weight = convolve(
+        missing_variance_weight = convolve_detector_frame(
             (count_valid & ~variance_valid).astype(float),
             weights,
-            mode="constant",
-            cval=0.0,
         )
-        variance_numerator = convolve(
+        variance_numerator = convolve_detector_frame(
             np.where(variance_valid, variance[frame], 0.0),
             weights**2,
-            mode="constant",
-            cval=0.0,
         )
         uncertainty_valid = output_valid & (missing_variance_weight < 1e-12)
         smoothed_variance[frame] = np.divide(
@@ -485,19 +479,15 @@ def smooth_detector_sensor(
         )
 
         quality_valid = count_valid & np.isfinite(quality_weight[frame])
-        missing_quality_weight = convolve(
+        missing_quality_weight = convolve_detector_frame(
             (count_valid & ~quality_valid).astype(float),
             weights,
-            mode="constant",
-            cval=0.0,
         )
         clipped_quality = np.clip(quality_weight[frame], 0.0, 1.0)
         log_quality = np.log(np.maximum(clipped_quality, quality_weight_floor))
-        log_numerator = convolve(
+        log_numerator = convolve_detector_frame(
             np.where(quality_valid, log_quality, 0.0),
             weights,
-            mode="constant",
-            cval=0.0,
         )
         quality_output_valid = output_valid & (missing_quality_weight < 1e-12)
         propagated_quality = np.exp(np.divide(
@@ -506,11 +496,9 @@ def smooth_detector_sensor(
             out=np.full(counts.shape[1:], np.nan),
             where=quality_output_valid,
         ))
-        positive_quality_support = convolve(
+        positive_quality_support = convolve_detector_frame(
             (quality_valid & (clipped_quality > 0)).astype(float),
             weights,
-            mode="constant",
-            cval=0.0,
         )
         propagated_quality[
             quality_output_valid & (positive_quality_support < 1e-12)
@@ -621,10 +609,6 @@ class PrecipitationDetector:
                 "; " + self.smoothing_variance_method
             )
         self.software_version = str(software_version)
-        self.source_fuv_detector = fuv["source_file"]
-        self.source_fuv_detector_sha256 = fuv["source_sha256"]
-        self.source_fuv_detector_size_bytes = fuv["source_size_bytes"]
-        self.source_fuv_detector_mtime_ns = fuv["source_mtime_ns"]
         self.source_fuv_detector_schema_version = fuv["schema_version"]
         self.source_preprocessing_label = fuv["preprocessing_label"]
         self.source_fuv_detector_time_decoding = fuv["source_time_decoding"]
@@ -957,14 +941,6 @@ class PrecipitationDetector:
             )
             nc.proton_response_energy_min = PROTON_RESPONSE_ENERGY_RANGE[0]
             nc.proton_response_energy_max = PROTON_RESPONSE_ENERGY_RANGE[1]
-            nc.source_fuv_detector = self.source_fuv_detector
-            nc.source_fuv_detector_sha256 = self.source_fuv_detector_sha256
-            nc.source_fuv_detector_size_bytes = np.int64(
-                self.source_fuv_detector_size_bytes
-            )
-            nc.source_fuv_detector_mtime_ns = np.int64(
-                self.source_fuv_detector_mtime_ns
-            )
             nc.source_fuv_detector_schema_version = (
                 self.source_fuv_detector_schema_version
             )

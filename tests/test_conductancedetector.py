@@ -237,7 +237,7 @@ def test_detector_conductance_netcdf_is_self_describing(tmp_path):
         assert nc.method_quality_weight_method == "three-sensor test product"
         assert nc.method_quality_weight_floor == 1e-6
         assert "geometric" in nc.method_quality_weight_spatial_propagation
-        assert nc.source_precipitation_detector == str(source)
+        assert "source_precipitation_detector" not in nc.ncattrs()
         assert (
             nc.source_precipitation_detector_schema_version
             == PRECIPITATION_SCHEMA_VERSION
@@ -271,7 +271,7 @@ def test_detector_conductance_netcdf_is_self_describing(tmp_path):
         nc.audit_change = "source changed after Product 3 was written"
     assert ORBIT_SCRIPT.conductance_detector_file_status(
         output, source
-    ) == "mismatch"
+    ) == "complete"
 
 
 def test_fang_detector_uses_150km_field_and_records_floor(tmp_path, monkeypatch):

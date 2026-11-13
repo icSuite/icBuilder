@@ -74,7 +74,6 @@ def precipitation_cs_file_status(filename, source_precipitation):
         return "mismatch"
 
     try:
-        source_stat = source_precipitation.stat()
         with open_product(filename) as product, open_product(source_precipitation) as source:
             status = _common_cs_status(
                 product,
@@ -101,19 +100,6 @@ def precipitation_cs_file_status(filename, source_precipitation):
             )
             if source_has_preproton_wic != product_has_preproton_wic:
                 return "invalid"
-            if (
-                product.source_precipitation_detector
-                != str(source_precipitation)
-                or int(
-                    product.attrs["source_precipitation_detector_size_bytes"]
-                )
-                != source_stat.st_size
-                or int(
-                    product.attrs["source_precipitation_detector_mtime_ns"]
-                )
-                != source_stat.st_mtime_ns
-            ):
-                return "mismatch"
     except (OSError, RuntimeError, KeyError, AttributeError, ValueError):
         return "invalid"
     return "complete"
@@ -133,7 +119,6 @@ def conductance_cs_file_status(
         return "mismatch"
 
     try:
-        source_stat = source_conductance.stat()
         with open_product(filename) as product, open_product(source_conductance) as source:
             status = _common_cs_status(
                 product,
@@ -169,14 +154,6 @@ def conductance_cs_file_status(
                         return "invalid"
                     if getattr(product, name).shape != product.shape:
                         return "invalid"
-            if (
-                product.source_conductance_detector != str(source_conductance)
-                or int(product.attrs["source_conductance_detector_size_bytes"])
-                != source_stat.st_size
-                or int(product.attrs["source_conductance_detector_mtime_ns"])
-                != source_stat.st_mtime_ns
-            ):
-                return "mismatch"
     except (OSError, RuntimeError, KeyError, AttributeError, ValueError):
         return "invalid"
     return "complete"

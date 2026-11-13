@@ -17,7 +17,7 @@ from icphysics import (
 )
 from netCDF4 import Dataset, date2num
 
-from .fuvdetector import SOURCE_TIME_DECODING, source_identity
+from .fuvdetector import SOURCE_TIME_DECODING
 from .precipitationdetector import (
     COUNT_UNCERTAINTY_MODE,
     PREPROCESSING_METADATA_ATTRIBUTES,
@@ -232,8 +232,6 @@ def load_precipitation_detector(filename):
             "coordinate_system": source.coordinate_system,
             "reference_height_km": float(source.reference_height_km),
             "source_software_version": source.software_version,
-            "source_fuv_detector": source.source_fuv_detector,
-            "source_fuv_detector_sha256": source.source_fuv_detector_sha256,
             "source_preprocessing_label": source.source_preprocessing_label,
             "source_fuv_detector_time_decoding": (
                 source.source_fuv_detector_time_decoding
@@ -278,7 +276,7 @@ def load_precipitation_detector(filename):
         for name in ("method_valid", "Ep_clipping_flag"):
             product[name] = np.asarray(source.read(name), dtype=bool)
 
-    product.update(source_identity(filename))
+    product["source_file"] = str(filename)
     return product
 
 
@@ -379,23 +377,12 @@ class ConductanceDetector:
                 "proton_energy_uncertainty_constant"
             ]
 
-        self.source_precipitation_detector = precipitation["source_file"]
-        self.source_precipitation_detector_sha256 = precipitation["source_sha256"]
-        self.source_precipitation_detector_size_bytes = precipitation[
-            "source_size_bytes"
-        ]
-        self.source_precipitation_detector_mtime_ns = precipitation[
-            "source_mtime_ns"
-        ]
+        self._source_precipitation_detector = precipitation["source_file"]
         self.source_precipitation_detector_schema_version = precipitation[
             "schema_version"
         ]
         self.source_precipitation_software_version = precipitation[
             "source_software_version"
-        ]
-        self.source_fuv_detector = precipitation["source_fuv_detector"]
-        self.source_fuv_detector_sha256 = precipitation[
-            "source_fuv_detector_sha256"
         ]
         self.source_preprocessing_label = precipitation[
             "source_preprocessing_label"
@@ -576,26 +563,12 @@ class ConductanceDetector:
                     self.proton_energy_uncertainty_constant
                 )
 
-            nc.source_precipitation_detector = (
-                self.source_precipitation_detector
-            )
-            nc.source_precipitation_detector_sha256 = (
-                self.source_precipitation_detector_sha256
-            )
-            nc.source_precipitation_detector_size_bytes = np.int64(
-                self.source_precipitation_detector_size_bytes
-            )
-            nc.source_precipitation_detector_mtime_ns = np.int64(
-                self.source_precipitation_detector_mtime_ns
-            )
             nc.source_precipitation_detector_schema_version = (
                 self.source_precipitation_detector_schema_version
             )
             nc.source_precipitation_software_version = (
                 self.source_precipitation_software_version
             )
-            nc.source_fuv_detector = self.source_fuv_detector
-            nc.source_fuv_detector_sha256 = self.source_fuv_detector_sha256
             nc.source_preprocessing_label = self.source_preprocessing_label
             nc.source_fuv_detector_time_decoding = (
                 self.source_fuv_detector_time_decoding

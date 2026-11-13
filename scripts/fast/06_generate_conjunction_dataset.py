@@ -548,17 +548,6 @@ def validate_orbit_products(orbit, cs, precipitation, conductance,
     if not np.array_equal(cs.time, precipitation.time):
         raise ValueError(f"Orbit {orbit:04d} CS/detector times differ")
 
-    cs_hash = cs.attrs["source_precipitation_detector_sha256"]
-    p3_hash = conductance.attrs["source_precipitation_detector_sha256"]
-    if cs_hash != p3_hash:
-        raise ValueError(f"Orbit {orbit:04d} CS and Product 3 use different Product 2")
-    for product, label in ((cs, "CS"), (conductance, "Product 3")):
-        source = Path(product.attrs["source_precipitation_detector"]).name
-        if source != Path(precipitation.filename).name:
-            raise ValueError(
-                f"Orbit {orbit:04d} {label} source does not match Product 2"
-            )
-
     identity = {
         **{
             name: getattr(precipitation, name, precipitation.attrs.get(name))

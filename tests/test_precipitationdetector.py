@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 from icphysics import hardy_ion_precipitation
 from netCDF4 import Dataset
+from scipy.ndimage import convolve
 
 from icbuilder.fuvdetector import (
     BS2D_PREPROCESSING_LABEL,
@@ -21,6 +22,8 @@ from icbuilder.precipitationdetector import (
     QUALITY_WEIGHT_FLOOR,
     PrecipitationDetector,
     SCHEMA_VERSION,
+    convolve_detector_frame,
+    gaussian_smoothing_kernel,
     smooth_detector_sensor,
 )
 import icbuilder.precipitationdetector as precipitationdetector_module
@@ -403,6 +406,18 @@ def test_gaussian_smoothing_propagates_counts_variance_and_quality():
     assert 0 < smoothed_variance[0, 2, 2] < 9.0
 
 
+def test_separable_gaussian_matches_previous_2d_convolution():
+    values = np.random.default_rng(4).normal(size=(31, 37))
+    for width in (0.8, 1.2):
+        weights = gaussian_smoothing_kernel(width)
+        expected = convolve(
+            values, np.outer(weights, weights),
+            mode="constant", cval=0.0,
+        )
+        actual = convolve_detector_frame(values, weights)
+        np.testing.assert_allclose(actual, expected, rtol=1e-14, atol=1e-14)
+
+
 def test_geometric_quality_propagation_penalizes_one_low_weight():
     counts = np.ones((1, 9, 9))
     variance = np.ones((1, 9, 9))
@@ -651,7 +666,7 @@ def test_precipitation_detector_netcdf_is_self_describing(tmp_path):
         assert nc.method_quality_weight_floor == QUALITY_WEIGHT_FLOOR
         assert nc.proton_flux_source == "SI12"
         assert nc.proton_energy_model == "constant"
-        assert nc.source_fuv_detector == str(source)
+        assert "source_fuv_detector" not in nc.ncattrs()
         assert nc.source_fuv_detector_schema_version == 2
         assert nc.source_preprocessing_label == PREPROCESSING_LABEL
         assert (

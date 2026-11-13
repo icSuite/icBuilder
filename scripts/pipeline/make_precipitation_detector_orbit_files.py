@@ -46,7 +46,7 @@ from icbuilder.precipitationdetector import (
 
 def precipitation_detector_file_status(
     filename,
-    source_fuv_detector,
+    _source_fuv_detector,
     proton_energy_model,
     proton_energy,
     proton_energy_uncertainty,
@@ -76,7 +76,6 @@ def precipitation_detector_file_status(
                 product.method != method
                 or product.proton_flux_source != "SI12"
                 or product.proton_energy_model != proton_energy_model
-                or product.source_fuv_detector != str(source_fuv_detector)
                 or product.attrs.get(
                     "count_source", "background_subtracted"
                 ) != count_source
@@ -166,7 +165,7 @@ def save_precipitation_detector(product, filename):
         product.to_nc(partial)
         status = precipitation_detector_file_status(
             partial,
-            product.source_fuv_detector,
+            None,
             product.proton_energy_model,
             product.proton_energy_constant,
             product.proton_energy_uncertainty_constant,

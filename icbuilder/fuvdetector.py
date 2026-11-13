@@ -8,7 +8,6 @@ independently and mapped to WIC pixels with detector-footprint overlap.
 #%% Imports
 
 from datetime import timedelta
-import hashlib
 from pathlib import Path
 
 import apexpy
@@ -115,29 +114,6 @@ def _as_float(values):
     if np.ma.isMaskedArray(values):
         values = values.filled(np.nan)
     return np.asarray(values, dtype=float)
-
-
-def file_sha256(filename, chunk_size=8 * 1024 * 1024):
-    """Return the SHA-256 digest of one source product without loading it whole."""
-
-    digest = hashlib.sha256()
-    with Path(filename).open("rb") as stream:
-        for chunk in iter(lambda: stream.read(chunk_size), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def source_identity(filename):
-    """Return stable content identity plus filesystem provenance."""
-
-    filename = Path(filename)
-    stat = filename.stat()
-    return {
-        "source_file": str(filename),
-        "source_sha256": file_sha256(filename),
-        "source_size_bytes": int(stat.st_size),
-        "source_mtime_ns": int(stat.st_mtime_ns),
-    }
 
 
 def _source_times(nc):
@@ -272,8 +248,7 @@ def load_detector_source(filename, sensor, *, preprocessing_label=PREPROCESSING_
     if np.any(np.isfinite(variance) & (variance < 0)):
         raise ValueError("source img_variance must not contain negative values")
 
-    source = source_identity(filename)
-    source.update({
+    source = {
         "sensor": sensor,
         "image_field": image_field,
         "unsubtracted_image_field": unsubtracted_image_field,
@@ -290,7 +265,7 @@ def load_detector_source(filename, sensor, *, preprocessing_label=PREPROCESSING_
         "geometry_valid": np.isfinite(glat) & np.isfinite(glon),
         "pointing_correction_method": pointing_method,
         "pointing_reference_sensor": pointing_reference,
-    })
+    }
     return source
 
 
@@ -466,12 +441,6 @@ class FUVDetector:
         if len(self.shape) != 3 or self.time.shape != (self.shape[0],):
             raise ValueError("WIC counts must have shape (time, row, column)")
 
-        self.source_products = {"wic": wic.get("source_file", "")}
-        self.source_sha256 = {"wic": wic.get("source_sha256", "")}
-        self.source_size_bytes = {
-            "wic": int(wic.get("source_size_bytes", -1))
-        }
-        self.source_mtime_ns = {"wic": int(wic.get("source_mtime_ns", -1))}
         self.image_fields = {"wic": wic.get("image_field", "unknown")}
         self.unsubtracted_image_fields = {
             "wic": wic.get("unsubtracted_image_field", "unknown")
@@ -529,22 +498,12 @@ class FUVDetector:
 
         for name, sensor in sources.items():
             if sensor is None:
-                self.source_products[name] = ""
-                self.source_sha256[name] = ""
-                self.source_size_bytes[name] = -1
-                self.source_mtime_ns[name] = -1
                 fields = BS2D_IMAGE_FIELDS if preprocessing_label == BS2D_PREPROCESSING_LABEL else IMAGE_FIELDS
                 self.image_fields[name] = fields[name.upper()]
                 self.unsubtracted_image_fields[name] = (
                     UNSUBTRACTED_IMAGE_FIELDS[name.upper()]
                 )
                 continue
-            self.source_products[name] = sensor.get("source_file", "")
-            self.source_sha256[name] = sensor.get("source_sha256", "")
-            self.source_size_bytes[name] = int(
-                sensor.get("source_size_bytes", -1)
-            )
-            self.source_mtime_ns[name] = int(sensor.get("source_mtime_ns", -1))
             self.image_fields[name] = sensor.get("image_field", "unknown")
             self.unsubtracted_image_fields[name] = sensor.get(
                 "unsubtracted_image_field", "unknown"
@@ -740,18 +699,6 @@ class FUVDetector:
             nc.unsubtracted_counts_stored = np.int8(1)
 
             for sensor in ("wic", "si12", "si13"):
-                nc.setncattr(f"source_{sensor}", self.source_products[sensor])
-                nc.setncattr(
-                    f"source_{sensor}_sha256", self.source_sha256[sensor]
-                )
-                nc.setncattr(
-                    f"source_{sensor}_size_bytes",
-                    np.int64(self.source_size_bytes[sensor]),
-                )
-                nc.setncattr(
-                    f"source_{sensor}_mtime_ns",
-                    np.int64(self.source_mtime_ns[sensor]),
-                )
                 nc.setncattr(f"{sensor}_image_field", self.image_fields[sensor])
                 nc.setncattr(
                     f"{sensor}_unsubtracted_image_field",

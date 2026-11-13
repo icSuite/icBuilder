@@ -22,7 +22,6 @@ from icbuilder.fuvdetector import (
     SCHEMA_VERSION,
     load_detector_source,
     match_wic_times,
-    source_identity,
 )
 
 
@@ -365,8 +364,6 @@ def test_detector_product_netcdf_is_self_describing_and_restart_safe(tmp_path):
     si12 = regular_camera(
         "SI12", 8, 0.10, [BASE_TIME + timedelta(seconds=1)], 5.0
     )
-    wic.update(source_identity(wic_file))
-    si12.update(source_identity(si12_file))
     product = FUVDetector(wic, si12, software_version="test")
     source_files = {
         "wic": wic_file,
@@ -401,6 +398,11 @@ def test_detector_product_netcdf_is_self_describing_and_restart_safe(tmp_path):
         assert "independent detector-pixel" in nc.detector_noise_model
         assert nc.coregistration_overlap_operator_stored == 0
         assert "Kp" not in nc.variables
+        for sensor in ("wic", "si12", "si13"):
+            assert f"source_{sensor}" not in nc.ncattrs()
+            assert f"source_{sensor}_sha256" not in nc.ncattrs()
+            assert f"source_{sensor}_size_bytes" not in nc.ncattrs()
+            assert f"source_{sensor}_mtime_ns" not in nc.ncattrs()
         for name in ("dE0", "dFe", "dP", "dH", "wic_uncertainty"):
             assert name not in nc.variables
 
@@ -485,7 +487,7 @@ def test_detector_product_netcdf_is_self_describing_and_restart_safe(tmp_path):
     changed_sources = source_files | {"si12": tmp_path / "different_si12.nc"}
     assert ORBIT_SCRIPT.fuv_detector_file_status(
         output, PREPROCESSING_LABEL, changed_sources
-    ) == "mismatch"
+    ) == "complete"
 
 
 @pytest.mark.parametrize("present_si", [None, "SI12", "SI13"])

@@ -192,11 +192,8 @@ def fuv_detector_file_status(
                         return "mismatch"
 
             for sensor in ("wic", "si12", "si13"):
-                source = source_files[sensor]
-                expected_path = "" if source is None else str(source)
                 if (
-                    product.source_products[sensor] != expected_path
-                    or product.attrs[f"{sensor}_image_field"]
+                    product.attrs[f"{sensor}_image_field"]
                     != image_fields[sensor.upper()]
                 ):
                     return "mismatch"

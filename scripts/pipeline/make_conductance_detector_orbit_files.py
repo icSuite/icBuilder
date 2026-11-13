@@ -50,7 +50,6 @@ def conductance_detector_file_status(
         return "mismatch"
 
     try:
-        source_stat = source_precipitation.stat()
         with open_product(filename) as product, open_product(
             source_precipitation
         ) as source:
@@ -62,12 +61,6 @@ def conductance_detector_file_status(
                 return "invalid"
             if (
                 product.conductance_model != conductance_model
-                or product.source_precipitation_detector
-                != str(source_precipitation)
-                or int(product.attrs["source_precipitation_detector_size_bytes"])
-                != source_stat.st_size
-                or int(product.attrs["source_precipitation_detector_mtime_ns"])
-                != source_stat.st_mtime_ns
             ):
                 return "mismatch"
             if (
@@ -145,7 +138,7 @@ def save_conductance_detector(product, filename):
         product.to_nc(partial)
         status = conductance_detector_file_status(
             partial,
-            product.source_precipitation_detector,
+            product._source_precipitation_detector,
             product.conductance_model,
         )
         if status != "complete":

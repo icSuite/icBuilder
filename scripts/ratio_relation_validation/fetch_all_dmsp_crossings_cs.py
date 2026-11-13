@@ -212,10 +212,6 @@ def process_orbit(image_file, dmsp_files, dmsp_cache):
             "matching_method": "nearest fixed Cubed-Sphere cell in Modified Apex coordinates",
             "spatial_filter": "none; cs_inside is stored for downstream selection",
             "source_precipitation_cs": str(image_file.resolve()),
-            "source_precipitation_detector_sha256": image.attrs[
-                "source_precipitation_detector_sha256"
-            ],
-            "source_fuv_detector_sha256": image.source_fuv_detector_sha256,
             "source_preprocessing_label": image.attrs["source_preprocessing_label"],
             "proton_energy_model": image.proton_energy_model,
             "grid_id": image.grid_id,

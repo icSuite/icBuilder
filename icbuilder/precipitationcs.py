@@ -18,7 +18,6 @@ from .detectorcs import (
     reduce_support,
     write_common_cs_coordinates,
 )
-from .fuvdetector import source_identity
 from .grids import DETECTOR_CS_GRID_ID
 from .precipitationdetector import (
     COUNT_UNCERTAINTY_MODE,
@@ -107,7 +106,6 @@ class PrecipitationCS:
 
     def __init__(self, source, *, grid, software_version):
         filename = Path(source.filename)
-        self.source_identity = source_identity(filename)
         self.grid = grid
         self.grid_id = DETECTOR_CS_GRID_ID
         self.software_version = str(software_version)
@@ -174,8 +172,6 @@ class PrecipitationCS:
         self.count_uncertainty_method = source.count_uncertainty_method
         self.coordinate_system = source.coordinate_system
         self.source_software_version = source.software_version
-        self.source_fuv_detector = source.source_fuv_detector
-        self.source_fuv_detector_sha256 = source.source_fuv_detector_sha256
         self.source_preprocessing_label = source.source_preprocessing_label
         self.source_fuv_detector_time_decoding = (
             source.source_fuv_detector_time_decoding
@@ -403,24 +399,12 @@ class PrecipitationCS:
             nc.coordinate_system = self.coordinate_system
             nc.reference_height_km = self.reference_height_km
             nc.software_version = self.software_version
-            nc.source_precipitation_detector = self.source_identity["source_file"]
-            nc.source_precipitation_detector_sha256 = self.source_identity[
-                "source_sha256"
-            ]
-            nc.source_precipitation_detector_size_bytes = np.int64(
-                self.source_identity["source_size_bytes"]
-            )
-            nc.source_precipitation_detector_mtime_ns = np.int64(
-                self.source_identity["source_mtime_ns"]
-            )
             nc.source_precipitation_detector_schema_version = (
                 DETECTOR_SCHEMA_VERSION
             )
             nc.source_precipitation_software_version = (
                 self.source_software_version
             )
-            nc.source_fuv_detector = self.source_fuv_detector
-            nc.source_fuv_detector_sha256 = self.source_fuv_detector_sha256
             nc.source_preprocessing_label = self.source_preprocessing_label
             nc.source_fuv_detector_time_decoding = (
                 self.source_fuv_detector_time_decoding

@@ -515,7 +515,6 @@ def process_orbit(image_file, cs_file, dmsp_files, dmsp_cache):
             "source_precipitation_detector": str(image_file.resolve()),
             "source_precipitation_cs": str(cs_file.resolve()),
             "source_precipitation_cs_grid_id": cs_grid_id,
-            "source_fuv_detector_sha256": image.source_fuv_detector_sha256,
             "source_preprocessing_label": image.source_preprocessing_label,
             "proton_energy_model": image.proton_energy_model,
             "source_count_source": image.attrs.get(
