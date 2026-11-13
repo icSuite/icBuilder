@@ -133,29 +133,23 @@ Output:
 ----------------------------
 
 Purpose:
-    Apply the scientific selections once and compile a compact analysis dataset
-    containing both sample-level scalars and physically aggregated IMAGE-pixel
-    records. Do not make publication figures in this stage.
+    Compile the complete conjunction collection once into a compact analysis
+    dataset containing both sample-level scalars and physically aggregated
+    IMAGE-pixel records. Do not filter the scientific population and do not make
+    publication figures in this stage.
 
 Inputs:
     1. One or more yearly conjunction datasets.
     2. Optional FAST--IMAGE frame annotations.
-    3. Geometric and contextual selection options.
-    4. Output filename.
+    3. Output filename.
 
 Selection:
-    - Require valid FAST instrument data and sufficient spectral support for the
-      quantity being aggregated.
-    - Optional annotation flag 1 only.
-    - Optional maximum detector-centre separation.
-    - Optional maximum FAST altitude.
-    - Optional minimum solar-zenith angle.
-    - Optional maximum absolute FAST--IMAGE time offset.
-    - Retain the Dombeck intense/weak label for diagnostic stratification, but
-      never reject measurements merely because they are Dombeck-weak.
+    - None. Retain every conjunction sample and every IMAGE detector-pixel group.
+    - Attach annotation status, Dombeck status, FAST validity, altitude,
+      detector-centre separation, SZA, DZA and time offset for later filtering.
 
 Pixel aggregation:
-    - Group selected FAST measurements by IMAGE orbit, frame, detector row and
+    - Group all FAST measurements by IMAGE orbit, frame, detector row and
       detector column.
     - Use the effective measurement duration derived from the stored Dombeck
       window span and record count when averaging native FAST measurements. The
@@ -185,16 +179,15 @@ Output:
     - Sample-level scalar quantities needed for coverage and before/after
       selection distributions. Do not copy the large spectra or MSIS profiles
       into this sample table.
-    - A Boolean flag for every individual selection criterion and their combined
-      selection, so rejection causes remain auditable.
-    - One selected, aggregated record per IMAGE detector pixel, including the
+    - Annotation, Dombeck, FAST-validity and geometric/context fields needed for
+      plot-time logical selections.
+    - One aggregated record per IMAGE detector pixel, including the
       aggregated FAST moments and conductances, IMAGE quantities and aggregation
       counts.
-    - The explicit selection limits and aggregation rules as concise file
-      attributes.
+    - The aggregation rules as concise file attributes.
 
-Changing a sample-level selection requires rebuilding this compact dataset.
-Changing a figure does not.
+Changing a scientific selection or a figure does not require rebuilding this
+compact dataset.
 
 
 5) plot_conjunction_analysis.py
@@ -208,11 +201,14 @@ Purpose:
 Inputs:
     1. Compact analysis NetCDF from aggregate_conjunctions.py.
     2. Output directory.
+    3. Optional annotation, Dombeck, altitude, separation, SZA, DZA and time
+       offset filters.
 
 Work and output:
-    - Coverage, validity and selection summaries, including rejection counts by
-      criterion.
-    - Combined-year distributions before and after the scientific selections.
+    - Apply all scientific selections as inexpensive logical masks.
+    - Coverage and selection summaries.
+    - Combined-year sample and pixel-aggregated distributions for the selected
+      population.
     - Optional year-resolved coverage distributions.
     - FAST--IMAGE energy, flux and conductance comparisons using pixel-aggregated
       FAST quantities as the primary scientific view.

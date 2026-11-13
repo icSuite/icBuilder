@@ -1,7 +1,7 @@
 """Compile FAST--IMAGE conjunctions into a compact analysis dataset.
 
 The output retains sample-level scalar fields and one physically aggregated
-FAST record per selected IMAGE detector pixel.  It never reopens raw FAST EES
+FAST record per IMAGE detector pixel.  It never reopens raw FAST EES
 files and never reruns MSIS.
 """
 
@@ -201,82 +201,29 @@ def annotation_status(data, year, annotations):
     return status
 
 
-def selection_for_file(data, year, annotations, limits):
+def validate_input_fields(data):
     required = set(REQUIRED_SCALARS) | set(SPECTRUM_FIELDS)
     required |= set(ATMOSPHERE_FIELDS.values())
     missing = required.difference(data.variables)
     if missing:
         raise ValueError(f"conjunction file is missing {sorted(missing)}")
 
-    count = len(data.dimensions["sample"])
-    flags = {}
-    flags["fast_valid"] = values(
-        data.variables["fast_measurement_valid"]
-    ).astype(bool)
-
-    status = annotation_status(data, year, annotations)
-    flags["annotation_valid"] = (
-        status == 1 if annotations else np.ones(count, dtype=bool)
-    )
-
-    duration_count = values(data.variables["dombeck_window_record_count"])
-    duration_span = values(data.variables["dombeck_window_span_seconds"])
-    duration = np.divide(
-        duration_span, duration_count,
-        out=np.full(count, np.nan), where=duration_count > 0,
-    )
-    flags["duration_valid"] = np.isfinite(duration) & (duration > 0)
-
-    separation = values(data.variables["detector_separation_deg"])
-    maximum = limits["maximum_detector_separation_deg"]
-    flags["detector_separation_valid"] = (
-        np.ones(count, dtype=bool) if maximum is None
-        else np.isfinite(separation) & (separation <= maximum)
-    )
-
-    altitude = values(data.variables["fast_altitude_km"])
-    maximum = limits["maximum_altitude_km"]
-    flags["altitude_valid"] = (
-        np.ones(count, dtype=bool) if maximum is None
-        else np.isfinite(altitude) & (altitude <= maximum)
-    )
-
-    sza = values(data.variables["image_sza"])
-    minimum = limits["minimum_sza_deg"]
-    flags["sza_valid"] = (
-        np.ones(count, dtype=bool) if minimum is None
-        else np.isfinite(sza) & (sza >= minimum)
-    )
-
-    offset = values(data.variables["time_offset_seconds"])
-    maximum = limits["maximum_absolute_time_offset_seconds"]
-    flags["time_offset_valid"] = (
-        np.ones(count, dtype=bool) if maximum is None
-        else np.isfinite(offset) & (np.abs(offset) <= maximum)
-    )
-
-    selected = np.ones(count, dtype=bool)
-    for flag in flags.values():
-        selected &= flag
-    return status, flags, selected
-
-
-def selected_pixel_runs(data, selected):
-    selected_records = np.flatnonzero(selected)
-    if selected_records.size == 0:
-        return selected_records, np.empty(0, int), np.empty(0, int)
+def pixel_runs(data):
+    records = np.arange(len(data.dimensions["sample"]), dtype=np.int64)
+    if records.size == 0:
+        return records, np.empty(0, int), np.empty(0, int)
 
     arrays = [
-        values(data.variables[name])[selected_records]
+        values(data.variables[name])
         for name in PIXEL_KEY_FIELDS
     ]
     keys = np.rec.fromarrays(arrays, names="orbit,frame,row,column")
     order = np.argsort(keys, order=keys.dtype.names, kind="stable")
-    selected_records = selected_records[order]
+    records = records[order]
     keys = keys[order]
     starts = np.r_[0, np.flatnonzero(keys[1:] != keys[:-1]) + 1]
-    stops = np.r_[starts[1:], selected_records.size]
-    return selected_records, starts, stops
+    stops = np.r_[starts[1:], records.size]
+    return records, starts, stops
 
 
 #%% Spectrum aggregation and conductance
@@ -358,8 +305,13 @@ def regrid_spectrum(source_energy, source_width, source_spectrum,
 def aggregate_spectra(energy, width, earthward, anti_earthward, weight,
                       output_energy_count):
     tables = [spectrum_table(energy[index], width[index]) for index in range(len(weight))]
-    lower = min(table[1][0] - table[2][0] / 2 for table in tables if table[1].size)
-    upper = max(table[1][-1] + table[2][-1] / 2 for table in tables if table[1].size)
+    populated = [table for table in tables if table[1].size]
+    if not populated:
+        return tuple(
+            np.full(output_energy_count, np.nan) for _ in range(4)
+        )
+    lower = min(table[1][0] - table[2][0] / 2 for table in populated)
+    upper = max(table[1][-1] + table[2][-1] / 2 for table in populated)
     candidates = []
     for index, table in enumerate(tables):
         if not table[1].size:
@@ -381,6 +333,8 @@ def aggregate_spectra(energy, width, earthward, anti_earthward, weight,
     anti_weight = np.zeros(target_energy.size)
     for index, table in enumerate(tables):
         channel, record_energy, record_width = table
+        if not record_energy.size:
+            continue
         record_earthward = earthward[index, channel]
         record_anti = anti_earthward[index, channel]
         if (
@@ -539,16 +493,11 @@ def create_output(filename, sample_count, pixel_count, energy_count,
         )
     create_variable(output, "sample_year", "i2", ("sample",), -1)
     create_variable(output, "sample_annotation_status", "i1", ("sample",), -1)
-    for name in (
-        "fast_valid", "annotation_valid", "duration_valid",
-        "detector_separation_valid", "altitude_valid", "sza_valid",
-        "time_offset_valid", "selected",
-    ):
-        create_variable(output, f"sample_{name}", "i1", ("sample",), -1)
 
     integer_pixel_fields = {
         "year": "i2", "image_orbit": "i4", "image_frame": "i4",
         "detector_row": "i2", "detector_column": "i2",
+        "annotation_status": "i1",
         "fast_sample_count": "i4", "conductance_spectrum_channel_count": "i2",
         "robinson_effective_valid": "i1",
     }
@@ -557,6 +506,7 @@ def create_output(filename, sample_count, pixel_count, energy_count,
         "footprint_geodetic_longitude", "footprint_mlt",
         "maximum_fast_altitude_km", "maximum_detector_separation_deg",
         "maximum_absolute_time_offset_seconds",
+        "fast_measurement_valid_exposure_fraction",
         "dombeck_available_exposure_fraction",
         "dombeck_intense_exposure_fraction",
         "earthward_number_flux_full_cm2_s",
@@ -604,6 +554,7 @@ def create_output(filename, sample_count, pixel_count, energy_count,
         "pixel_maximum_fast_altitude_km": "km",
         "pixel_maximum_detector_separation_deg": "degrees",
         "pixel_maximum_absolute_time_offset_seconds": "s",
+        "pixel_fast_measurement_valid_exposure_fraction": "1",
         "pixel_dombeck_available_exposure_fraction": "1",
         "pixel_dombeck_intense_exposure_fraction": "1",
         "pixel_earthward_number_flux_full_cm2_s": "cm-2 s-1",
@@ -650,7 +601,8 @@ def exact_group_value(array, name):
 
 
 def aggregate_pixel_batch(data, records, starts, stops, year, energy_count,
-                          msis_altitude, image_fields, conductance_batch_size):
+                          msis_altitude, image_fields, conductance_batch_size,
+                          annotation_status):
     read_fields = set(SPECTRUM_FIELDS) | {
         source_name for name, source_name in ATMOSPHERE_FIELDS.items()
         if name != "altitude_km"
@@ -661,6 +613,7 @@ def aggregate_pixel_batch(data, records, starts, stops, year, energy_count,
     read_fields |= {
         "image_time", "image_orbit", "image_frame",
         "detector_row", "detector_column",
+        "fast_measurement_valid",
         "dombeck_window_record_count", "dombeck_window_span_seconds",
         "dombeck_available", "dombeck_intense_precipitation",
     }
@@ -674,6 +627,7 @@ def aggregate_pixel_batch(data, records, starts, stops, year, energy_count,
     result = {
         "year": np.full(pixel_count, year, dtype=np.int16),
         "fast_sample_count": (stops - starts).astype(np.int32),
+        "annotation_status": np.full(pixel_count, -1, dtype=np.int8),
         "exposure_seconds": np.full(pixel_count, np.nan),
     }
     for name in (*PIXEL_KEY_FIELDS, *WEIGHTED_CONTEXT_FIELDS,
@@ -685,6 +639,7 @@ def aggregate_pixel_batch(data, records, starts, stops, year, energy_count,
     for name in (
         "maximum_fast_altitude_km", "maximum_detector_separation_deg",
         "maximum_absolute_time_offset_seconds",
+        "fast_measurement_valid_exposure_fraction",
         "dombeck_available_exposure_fraction",
         "dombeck_intense_exposure_fraction",
     ):
@@ -709,9 +664,19 @@ def aggregate_pixel_batch(data, records, starts, stops, year, energy_count,
         weight = np.divide(
             span, count, out=np.full(stop - start, np.nan), where=count > 0
         )
-        if not np.all(np.isfinite(weight) & (weight > 0)):
-            raise ValueError("selected FAST records contain invalid exposure weights")
-        result["exposure_seconds"][output_index] = np.sum(weight)
+        valid_weight = np.isfinite(weight) & (weight > 0)
+        if np.any(valid_weight):
+            result["exposure_seconds"][output_index] = np.sum(
+                weight[valid_weight]
+            )
+
+        annotated = annotation_status[local]
+        annotated = annotated[annotated >= 0]
+        if annotated.size:
+            unique = np.unique(annotated)
+            if unique.size != 1:
+                raise ValueError("annotation flags differ within one IMAGE pixel")
+            result["annotation_status"][output_index] = unique[0]
 
         for name in WEIGHTED_CONTEXT_FIELDS:
             result[name][output_index] = weighted_mean(arrays[name][local], weight)
@@ -740,6 +705,9 @@ def aggregate_pixel_batch(data, records, starts, stops, year, energy_count,
         result["maximum_absolute_time_offset_seconds"][output_index] = np.nanmax(
             np.abs(arrays["time_offset_seconds"][local])
         )
+        result["fast_measurement_valid_exposure_fraction"][output_index] = weighted_mean(
+            arrays["fast_measurement_valid"][local], weight
+        )
         result["dombeck_available_exposure_fraction"][output_index] = weighted_mean(
             arrays["dombeck_available"][local], weight
         )
@@ -747,15 +715,16 @@ def aggregate_pixel_batch(data, records, starts, stops, year, energy_count,
             arrays["dombeck_intense_precipitation"][local], weight
         )
 
-        aggregate = aggregate_spectra(
-            arrays["fast_energy_ev"][local],
-            arrays["fast_energy_width_ev"][local],
-            arrays["earthward_differential_number_flux_cm2_s_ev"][local],
-            arrays["anti_earthward_differential_number_flux_cm2_s_ev"][local],
-            weight, energy_count,
-        )
-        energy[output_index], width[output_index] = aggregate[:2]
-        earthward[output_index], anti_earthward[output_index] = aggregate[2:]
+        if np.any(valid_weight):
+            aggregate = aggregate_spectra(
+                arrays["fast_energy_ev"][local][valid_weight],
+                arrays["fast_energy_width_ev"][local][valid_weight],
+                arrays["earthward_differential_number_flux_cm2_s_ev"][local][valid_weight],
+                arrays["anti_earthward_differential_number_flux_cm2_s_ev"][local][valid_weight],
+                weight[valid_weight], energy_count,
+            )
+            energy[output_index], width[output_index] = aggregate[:2]
+            earthward[output_index], anti_earthward[output_index] = aggregate[2:]
 
         for name, source_name in ATMOSPHERE_FIELDS.items():
             if name == "altitude_km":
@@ -807,7 +776,7 @@ def write_pixel_batch(output, start, result):
 
 #%% Complete compiler
 
-def inspect_inputs(filenames, annotations, limits):
+def inspect_inputs(filenames, annotations):
     information = []
     sample_schema = None
     image_schema = None
@@ -852,12 +821,9 @@ def inspect_inputs(filenames, annotations, limits):
                 ):
                     raise ValueError("conjunction files have different MSIS altitude grids")
 
-            status, flags, selected = selection_for_file(
-                data, year, annotations, limits
-            )
-            selected_records, run_starts, run_stops = selected_pixel_runs(
-                data, selected
-            )
+            validate_input_fields(data)
+            status = annotation_status(data, year, annotations)
+            records, run_starts, run_stops = pixel_runs(data)
             local_sources = np.asarray(
                 data.variables["fast_source_file"][:], dtype=str
             )
@@ -866,8 +832,7 @@ def inspect_inputs(filenames, annotations, limits):
                 "sample_count": len(data.dimensions["sample"]),
                 "pixel_count": len(run_starts),
                 "annotation_status": status,
-                "flags": flags, "selected": selected,
-                "selected_records": selected_records,
+                "records": records,
                 "run_starts": run_starts, "run_stops": run_stops,
                 "source_offset": len(source_files),
                 "source_count": len(local_sources),
@@ -878,36 +843,27 @@ def inspect_inputs(filenames, annotations, limits):
 
 def build_dataset(args):
     annotations = read_annotations(args.annotations)
-    limits = {
-        "maximum_detector_separation_deg": args.maximum_detector_separation_deg,
-        "maximum_altitude_km": args.maximum_altitude_km,
-        "minimum_sza_deg": args.minimum_sza_deg,
-        "maximum_absolute_time_offset_seconds": args.maximum_absolute_time_offset_seconds,
-    }
     info, sample_schema, image_schema, energy_count, msis_altitude, source_files = inspect_inputs(
-        args.input, annotations, limits
+        args.input, annotations
     )
     sample_count = sum(item["sample_count"] for item in info)
     pixel_count = sum(item["pixel_count"] for item in info)
     if pixel_count == 0:
-        raise ValueError("no FAST measurements survive the selections")
+        raise ValueError("conjunction files contain no FAST measurements")
 
     root_attrs = {
         "title": "Compact FAST--IMAGE conjunction analysis dataset",
         "processing_complete": "true",
         "selected_years": json.dumps(sorted(item["year"] for item in info)),
-        "annotation_applied": "true" if annotations else "false",
+        "annotations_attached": "true" if annotations else "false",
+        "aggregation_selection": "none; every conjunction sample is aggregated",
         "aggregation_unit": "IMAGE orbit/frame/detector row/detector column",
         "aggregation_weight": "dombeck_window_span_seconds divided by dombeck_window_record_count",
         "mixed_energy_grid_rule": "piecewise-constant conservative bin-overlap regridding to the finest covering table in each pixel",
         "dombeck_role": "diagnostic intense/weak stratification only; never a quality selection",
         "sample_count": sample_count,
-        "selected_sample_count": int(sum(np.count_nonzero(item["selected"]) for item in info)),
         "pixel_count": pixel_count,
     }
-    for name, limit in limits.items():
-        if limit is not None:
-            root_attrs[name] = float(limit)
 
     output = Path(args.output)
     if output.exists() and not args.overwrite:
@@ -937,9 +893,6 @@ def build_dataset(args):
                         target.variables[f"sample_{name}"][sample_start:sample_stop] = array
                     target.variables["sample_year"][sample_start:sample_stop] = item["year"]
                     target.variables["sample_annotation_status"][sample_start:sample_stop] = item["annotation_status"]
-                    for name, flag in item["flags"].items():
-                        target.variables[f"sample_{name}"][sample_start:sample_stop] = flag.astype(np.int8)
-                    target.variables["sample_selected"][sample_start:sample_stop] = item["selected"].astype(np.int8)
 
                     starts = item["run_starts"]
                     stops = item["run_stops"]
@@ -959,13 +912,14 @@ def build_dataset(args):
                             group_stop += 1
                         selected_start = starts[group_start]
                         selected_stop = stops[group_stop - 1]
-                        records = item["selected_records"][selected_start:selected_stop]
+                        records = item["records"][selected_start:selected_stop]
                         local_starts = starts[group_start:group_stop] - selected_start
                         local_stops = stops[group_start:group_stop] - selected_start
                         result = aggregate_pixel_batch(
                             source, records, local_starts, local_stops,
                             item["year"], energy_count, msis_altitude,
                             tuple(image_schema), args.conductance_batch_size,
+                            item["annotation_status"][records],
                         )
                         pixel_start = write_pixel_batch(target, pixel_start, result)
                         progress.update(group_stop - group_start)
@@ -988,10 +942,6 @@ def main():
     parser.add_argument("--input", type=Path, nargs="+", required=True)
     parser.add_argument("--annotations", type=Path)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--maximum-detector-separation-deg", type=float)
-    parser.add_argument("--maximum-altitude-km", type=float)
-    parser.add_argument("--minimum-sza-deg", type=float)
-    parser.add_argument("--maximum-absolute-time-offset-seconds", type=float)
     parser.add_argument("--record-batch-size", type=int, default=DEFAULT_RECORD_BATCH_SIZE)
     parser.add_argument("--conductance-batch-size", type=int, default=DEFAULT_CONDUCTANCE_BATCH_SIZE)
     parser.add_argument("--overwrite", action="store_true")
@@ -1002,13 +952,6 @@ def main():
             raise FileNotFoundError(filename)
     if args.annotations is not None and not args.annotations.is_file():
         raise FileNotFoundError(args.annotations)
-    for name in (
-        "maximum_detector_separation_deg", "maximum_altitude_km",
-        "minimum_sza_deg", "maximum_absolute_time_offset_seconds",
-    ):
-        value = getattr(args, name)
-        if value is not None and (not np.isfinite(value) or value < 0):
-            raise ValueError(f"--{name.replace('_', '-')} must be finite and nonnegative")
     if args.record_batch_size < 1 or args.conductance_batch_size < 1:
         raise ValueError("batch sizes must be positive")
     build_dataset(args)

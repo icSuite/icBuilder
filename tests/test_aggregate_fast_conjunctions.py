@@ -147,7 +147,7 @@ def make_conjunction(filename, year=2000, energy_count=4):
             )[:] = np.broadcast_to(array, (sample_count, altitude.size))
 
 
-def test_compiler_writes_sample_flags_and_pixel_aggregates(tmp_path, monkeypatch):
+def test_compiler_writes_every_sample_and_pixel_aggregate(tmp_path, monkeypatch):
     source = tmp_path / "conjunction.nc"
     output = tmp_path / "analysis.nc"
     make_conjunction(source)
@@ -172,7 +172,7 @@ def test_compiler_writes_sample_flags_and_pixel_aggregates(tmp_path, monkeypatch
     with Dataset(output) as data:
         assert len(data.dimensions["sample"]) == 4
         assert len(data.dimensions["pixel"]) == 2
-        np.testing.assert_array_equal(data.variables["sample_selected"][:], 1)
+        assert "sample_selected" not in data.variables
         np.testing.assert_array_equal(
             data.variables["pixel_fast_sample_count"][:], [2, 2]
         )
@@ -182,7 +182,7 @@ def test_compiler_writes_sample_flags_and_pixel_aggregates(tmp_path, monkeypatch
         ).all()
 
 
-def test_selection_filters_samples_but_not_dombeck_weak(tmp_path):
+def test_compiler_does_not_filter_by_altitude_or_dombeck(tmp_path):
     source = tmp_path / "conjunction.nc"
     output = tmp_path / "analysis.nc"
     make_conjunction(source)
@@ -198,12 +198,12 @@ def test_selection_filters_samples_but_not_dombeck_weak(tmp_path):
     AGGREGATE.build_dataset(args)
 
     with Dataset(output) as data:
-        np.testing.assert_array_equal(
-            data.variables["sample_selected"][:], [1, 1, 0, 0]
-        )
         assert data.variables["sample_dombeck_intense_precipitation"][0] == 0
-        assert data.variables["sample_selected"][0] == 1
-        assert len(data.dimensions["pixel"]) == 1
+        assert len(data.dimensions["pixel"]) == 2
+        np.testing.assert_allclose(
+            data.variables["pixel_maximum_fast_altitude_km"][:],
+            [1100.0, 1300.0],
+        )
 
 
 def test_compiler_groups_noncontiguous_pixel_samples(tmp_path):
@@ -237,7 +237,7 @@ def test_compiler_groups_noncontiguous_pixel_samples(tmp_path):
         )
 
 
-def test_annotations_select_only_accepted_tracks(tmp_path):
+def test_annotations_are_stored_without_filtering_tracks(tmp_path):
     source = tmp_path / "conjunction.nc"
     output = tmp_path / "analysis.nc"
     annotations = tmp_path / "annotations.csv"
@@ -263,9 +263,9 @@ def test_annotations_select_only_accepted_tracks(tmp_path):
             data.variables["sample_annotation_status"][:], [1, 1, 0, 0]
         )
         np.testing.assert_array_equal(
-            data.variables["sample_selected"][:], [1, 1, 0, 0]
+            data.variables["pixel_annotation_status"][:], [1, 0]
         )
-        assert len(data.dimensions["pixel"]) == 1
+        assert len(data.dimensions["pixel"]) == 2
 
 
 def test_compiler_accepts_different_yearly_energy_dimensions(tmp_path):
