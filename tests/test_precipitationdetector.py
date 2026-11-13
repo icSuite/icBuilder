@@ -229,6 +229,7 @@ def test_missing_si13_keeps_wic_frame_but_invalidates_ratio(tmp_path):
     np.testing.assert_array_equal(precipitation.si13_source_index, [0, -1])
     assert precipitation.method_valid[0].any()
     assert not precipitation.method_valid[1].any()
+    assert np.isfinite(precipitation.wic_corrected[1]).any()
     assert np.isnan(precipitation.E0[1]).all()
     assert np.isnan(precipitation.Fe[1]).all()
 

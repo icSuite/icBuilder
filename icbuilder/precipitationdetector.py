@@ -761,24 +761,22 @@ class PrecipitationDetector:
         si12_method_valid = method_validity["si12"]
         si13_method_valid = method_validity["si13"]
 
-        input_valid = (
+        correction_valid = (
             wic_method_valid
             & si12_method_valid
             & np.isfinite(self.Ep)
         )
-        if method == "image_ratio":
-            input_valid &= si13_method_valid
-        wic = np.where(input_valid, wic_counts, np.nan)
-        si12 = np.where(input_valid, si12_counts, np.nan)
-        si13 = np.where(input_valid & si13_method_valid, si13_counts, np.nan)
+        wic = np.where(correction_valid, wic_counts, np.nan)
+        si12 = np.where(correction_valid, si12_counts, np.nan)
+        si13 = np.where(correction_valid & si13_method_valid, si13_counts, np.nan)
 
         # 4. Infer proton flux from mapped SI12, then correct WIC and SI13.
-        dwic = np.where(input_valid, np.sqrt(wic_variance), np.nan)
-        dsi12 = np.where(input_valid, np.sqrt(si12_variance), np.nan)
-        dsi13 = np.where(input_valid & si13_method_valid, np.sqrt(si13_variance), np.nan)
-        self.si12 = np.where(input_valid, unsmoothed_si12_counts, np.nan)
+        dwic = np.where(correction_valid, np.sqrt(wic_variance), np.nan)
+        dsi12 = np.where(correction_valid, np.sqrt(si12_variance), np.nan)
+        dsi13 = np.where(correction_valid & si13_method_valid, np.sqrt(si13_variance), np.nan)
+        self.si12 = np.where(correction_valid, unsmoothed_si12_counts, np.nan)
         self.dsi12 = np.where(
-            input_valid, np.sqrt(unsmoothed_si12_variance), np.nan
+            correction_valid, np.sqrt(unsmoothed_si12_variance), np.nan
         )
         with np.errstate(divide="ignore", invalid="ignore"):
             corrected = proton_correct_images(
@@ -848,7 +846,7 @@ class PrecipitationDetector:
             setattr(self, name, np.asarray(values, dtype=dtype))
 
         # 6. Retain input support separately from successful method output.
-        self.method_valid = input_valid & np.isfinite(self.E0) & np.isfinite(self.Fe)
+        self.method_valid = correction_valid & np.isfinite(self.E0) & np.isfinite(self.Fe)
         if self.count_source == "background_subtracted":
             quality_valid = (
                 wic_method_valid & np.isfinite(quality_weights["wic"])

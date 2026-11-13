@@ -63,9 +63,10 @@ def test_temporal_support_is_closed_at_both_edges():
     np.testing.assert_array_equal(selected, [1, 2, 3])
 
 
-def test_cs_gate_requires_only_wic_coverage_and_data():
+def test_cs_gate_requires_finite_wic_not_coverage():
     shape = (1, 1, 2)
     wic_coverage = np.ones(shape)
+    wic_coverage[0, 0, 0] = 0
     wic = np.ones(shape)
     wic[0, 0, 1] = np.nan
 

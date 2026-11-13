@@ -258,7 +258,7 @@ def cs_support_gate(grid, frame, mlat, mlt, wic_coverage, wic_corrected):
     column = np.asarray(column, dtype=np.int16)
     coverage = np.asarray(wic_coverage[frame, row, column], dtype=float)
     wic = np.asarray(wic_corrected[frame, row, column], dtype=float)
-    supported = np.isfinite(coverage) & (coverage > 0) & np.isfinite(wic)
+    supported = np.isfinite(wic)
     counts["cs_wic_rejection_count"] = int(np.count_nonzero(~supported))
     return inside_indices[supported], {"row": row[supported], "column": column[supported], "wic_coverage": coverage[supported].astype(np.float32)}, counts
 
@@ -885,7 +885,7 @@ def build_dataset(args):
                   "selected_year": args.year,
                   "frame_support_seconds": float(args.frame_support_seconds),
                   "reference_height_km": REFERENCE_HEIGHT_KM,
-                  "conjunction_gate": "finite WIC at CS and matched detector pixel",
+                  "conjunction_gate": "finite corrected WIC at CS and matched detector pixel",
                   "unique_match_rule": "minimum absolute time offset with deterministic ties",
                   "image_precipitation_method": str(precipitation_method),
                   "image_conductance_model": str(conductance_model),

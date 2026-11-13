@@ -359,7 +359,7 @@ def test_combined_builder_uses_separate_mappings_when_geometry_differs(
     assert len(calls) == 4
 
 
-def test_quality_weight_reduction_is_independent_of_physical_validity(tmp_path):
+def test_cs_reduces_each_field_from_its_finite_values(tmp_path):
     precipitation_source, conductance_source = write_detector_pair(
         tmp_path / "input"
     )
@@ -379,6 +379,9 @@ def test_quality_weight_reduction_is_independent_of_physical_validity(tmp_path):
 
     assert not precipitation.method_valid.any()
     assert not conductance.conductance_valid.any()
+    assert np.isfinite(precipitation.wic_corrected).any()
+    assert np.isfinite(conductance.E0).any()
+    assert not np.isfinite(conductance.P).any()
     assert np.isfinite(precipitation.method_quality_weight).any()
     assert np.isfinite(conductance.method_quality_weight).any()
     np.testing.assert_allclose(

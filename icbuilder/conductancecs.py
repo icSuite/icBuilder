@@ -217,13 +217,8 @@ class ConductanceCS:
 
         for name in MEAN_FIELDS:
             values = np.asarray(source.read(name, frame), dtype=float)
-            valid = (
-                np.isfinite(values)
-                if name == "method_quality_weight"
-                else conductance_valid
-            )
             reduced, _ = reduce_area_mean(
-                values, valid, mapping, output_shape
+                values, np.isfinite(values), mapping, output_shape
             )
             getattr(self, name)[frame] = reduced
 
@@ -231,21 +226,21 @@ class ConductanceCS:
             for name in FANG_MEAN_FIELDS:
                 values = np.asarray(source.read(name, frame), dtype=float)
                 reduced, _ = reduce_area_mean(
-                    values, conductance_valid, mapping, output_shape
+                    values, np.isfinite(values), mapping, output_shape
                 )
                 getattr(self, name)[frame] = reduced
 
         for name in UNCERTAINTY_FIELDS:
             uncertainty = np.asarray(source.read(name, frame), dtype=float)
             variance, _ = reduce_measurement_variance(
-                uncertainty**2, conductance_valid, mapping, output_shape
+                uncertainty**2, np.isfinite(uncertainty), mapping, output_shape
             )
             getattr(self, name)[frame] = np.sqrt(variance)
 
         for name in COVARIANCE_FIELDS:
             covariance = np.asarray(source.read(name, frame), dtype=float)
             reduced, _ = reduce_covariance(
-                covariance, conductance_valid, mapping, output_shape
+                covariance, np.isfinite(covariance), mapping, output_shape
             )
             getattr(self, name)[frame] = reduced
 
@@ -312,16 +307,9 @@ class ConductanceCS:
         for name in MEAN_FIELDS:
             values = np.asarray(source.read(name), dtype=float)
             for frame, mapping in enumerate(mappings):
-                valid = (
-                    np.isfinite(values[frame])
-                    if name == "method_quality_weight"
-                    else conductance_valid[frame]
-                )
                 reduced, _ = reduce_area_mean(
-                    values[frame],
-                    valid,
-                    mapping,
-                    output_shape,
+                    values[frame], np.isfinite(values[frame]), mapping,
+                    output_shape
                 )
                 getattr(self, name)[frame] = reduced
 
@@ -330,10 +318,8 @@ class ConductanceCS:
                 values = np.asarray(source.read(name), dtype=float)
                 for frame, mapping in enumerate(mappings):
                     reduced, _ = reduce_area_mean(
-                        values[frame],
-                        conductance_valid[frame],
-                        mapping,
-                        output_shape,
+                        values[frame], np.isfinite(values[frame]), mapping,
+                        output_shape
                     )
                     getattr(self, name)[frame] = reduced
 
@@ -342,7 +328,7 @@ class ConductanceCS:
             for frame, mapping in enumerate(mappings):
                 variance, _ = reduce_measurement_variance(
                     uncertainty[frame] ** 2,
-                    conductance_valid[frame],
+                    np.isfinite(uncertainty[frame]),
                     mapping,
                     output_shape,
                 )
@@ -352,10 +338,8 @@ class ConductanceCS:
             covariance = np.asarray(source.read(name), dtype=float)
             for frame, mapping in enumerate(mappings):
                 reduced, _ = reduce_covariance(
-                    covariance[frame],
-                    conductance_valid[frame],
-                    mapping,
-                    output_shape,
+                    covariance[frame], np.isfinite(covariance[frame]),
+                    mapping, output_shape
                 )
                 getattr(self, name)[frame] = reduced
 

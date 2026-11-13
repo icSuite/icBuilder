@@ -106,6 +106,8 @@ Work:
     - Index the processed FAST files and IMAGE orbits.
     - Use the precipitation CS product as the inexpensive temporal and spatial
       gate before loading detector-level products.
+    - Treat finite corrected WIC as the IMAGE availability gate. Do not gate
+      conjunctions on coverage or precipitation-method validity flags.
     - Load precipitation and conductance detector products only for supported
       IMAGE frames.
     - Match each supported FAST footprint to the appropriate IMAGE detector

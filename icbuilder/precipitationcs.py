@@ -226,27 +226,22 @@ class PrecipitationCS:
 
         for name in MEAN_FIELDS | self.preproton_mean_fields:
             values = np.asarray(source.read(name, frame), dtype=float)
-            valid = (
-                np.isfinite(values)
-                if name == "method_quality_weight"
-                else method_valid
-            )
             reduced, _ = reduce_area_mean(
-                values, valid, mapping, output_shape
+                values, np.isfinite(values), mapping, output_shape
             )
             getattr(self, name)[frame] = reduced
 
         for name in UNCERTAINTY_FIELDS | self.preproton_uncertainty_fields:
             uncertainty = np.asarray(source.read(name, frame), dtype=float)
             variance, _ = reduce_measurement_variance(
-                uncertainty**2, method_valid, mapping, output_shape
+                uncertainty**2, np.isfinite(uncertainty), mapping, output_shape
             )
             getattr(self, name)[frame] = np.sqrt(variance)
 
         for name in COVARIANCE_FIELDS:
             covariance = np.asarray(source.read(name, frame), dtype=float)
             reduced, _ = reduce_covariance(
-                covariance, method_valid, mapping, output_shape
+                covariance, np.isfinite(covariance), mapping, output_shape
             )
             getattr(self, name)[frame] = reduced
 
@@ -296,13 +291,9 @@ class PrecipitationCS:
         for name in MEAN_FIELDS | self.preproton_mean_fields:
             values = np.asarray(source.read(name), dtype=float)
             for frame, mapping in enumerate(mappings):
-                valid = (
-                    np.isfinite(values[frame])
-                    if name == "method_quality_weight"
-                    else method_valid[frame]
-                )
                 reduced, _ = reduce_area_mean(
-                    values[frame], valid, mapping, output_shape
+                    values[frame], np.isfinite(values[frame]), mapping,
+                    output_shape
                 )
                 getattr(self, name)[frame] = reduced
 
@@ -314,7 +305,7 @@ class PrecipitationCS:
             for frame, mapping in enumerate(mappings):
                 variance, _ = reduce_measurement_variance(
                     uncertainty[frame] ** 2,
-                    method_valid[frame],
+                    np.isfinite(uncertainty[frame]),
                     mapping,
                     output_shape,
                 )
@@ -325,10 +316,8 @@ class PrecipitationCS:
             uncertainty_valid &= np.isfinite(covariance)
             for frame, mapping in enumerate(mappings):
                 reduced, _ = reduce_covariance(
-                    covariance[frame],
-                    method_valid[frame],
-                    mapping,
-                    output_shape,
+                    covariance[frame], np.isfinite(covariance[frame]),
+                    mapping, output_shape
                 )
                 getattr(self, name)[frame] = reduced
 
